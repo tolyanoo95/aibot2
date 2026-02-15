@@ -8,6 +8,9 @@ models/*.json
 models/*.pkl
 models/*.cbm
 
+# catboost logs
+catboost_info/
+
 # logs
 *.log
 
