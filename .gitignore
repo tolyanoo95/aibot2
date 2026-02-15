@@ -1,0 +1,19 @@
+# env
+.env
+__pycache__/
+*.pyc
+
+# models
+models/*.json
+models/*.pkl
+
+# logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+
+# OS
+.DS_Store
