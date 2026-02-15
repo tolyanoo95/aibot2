@@ -31,6 +31,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+import lightgbm as lgb
+from catboost import CatBoostClassifier
 
 from src.config import config
 from src.data_fetcher import BinanceDataFetcher
@@ -164,47 +166,69 @@ class BacktestResult:
 #  Walk-forward model trainer (lightweight, in-memory)
 # ═════════════════════════════════════════════════════════════
 
-def _train_model_on_data(
+def _train_ensemble_on_data(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     feature_names: list,
     sample_weights: Optional[np.ndarray] = None,
-) -> xgb.XGBClassifier:
-    """Train an XGBoost model in memory (no saving to disk)."""
+) -> dict:
+    """Train XGBoost + LightGBM + CatBoost in memory (no saving)."""
     mask = ~(X_train.isna().any(axis=1) | y_train.isna())
     X_c = X_train.loc[mask]
     y_c = y_train.loc[mask].map(_LABEL_TO_CLASS)
     sw = sample_weights[mask.values] if sample_weights is not None else None
 
-    model = xgb.XGBClassifier(
-        n_estimators=500,
-        max_depth=7,
-        learning_rate=0.03,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        min_child_weight=5,
-        gamma=0.1,
-        reg_alpha=0.1,
-        reg_lambda=1.0,
-        objective="multi:softprob",
-        num_class=3,
-        eval_metric="mlogloss",
-        random_state=42,
-        n_jobs=-1,
-        verbosity=0,
+    models = {}
+
+    models["xgboost"] = xgb.XGBClassifier(
+        n_estimators=500, max_depth=7, learning_rate=0.03,
+        subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
+        gamma=0.1, reg_alpha=0.1, reg_lambda=1.0,
+        objective="multi:softprob", num_class=3, eval_metric="mlogloss",
+        random_state=42, n_jobs=-1, verbosity=0,
     )
-    model.fit(X_c, y_c, sample_weight=sw, verbose=False)
-    return model
+    models["xgboost"].fit(X_c, y_c, sample_weight=sw, verbose=False)
+
+    models["lightgbm"] = lgb.LGBMClassifier(
+        n_estimators=500, max_depth=7, learning_rate=0.03,
+        subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
+        reg_alpha=0.1, reg_lambda=1.0,
+        objective="multiclass", num_class=3,
+        random_state=42, n_jobs=-1, verbose=-1,
+    )
+    models["lightgbm"].fit(X_c, y_c, sample_weight=sw)
+
+    models["catboost"] = CatBoostClassifier(
+        iterations=500, depth=7, learning_rate=0.03,
+        l2_leaf_reg=1.0, random_seed=42, verbose=0,
+        loss_function="MultiClass", classes_count=3,
+    )
+    models["catboost"].fit(X_c, y_c, sample_weight=sw, verbose=0)
+
+    return models
 
 
-def _predict_with_model(model: xgb.XGBClassifier, X_row: pd.DataFrame) -> dict:
-    """Predict signal from a single-row DataFrame."""
+def _predict_with_ensemble(models: dict, X_row: pd.DataFrame) -> dict:
+    """Average probabilities from all models in the ensemble."""
     X_clean = X_row.replace([np.inf, -np.inf], np.nan).fillna(0)
-    proba = model.predict_proba(X_clean)[0]
-    pred_cls = int(np.argmax(proba))
+
+    all_proba = []
+    for name, model in models.items():
+        try:
+            proba = model.predict_proba(X_clean)[0]
+            if len(proba) == 3:
+                all_proba.append(proba)
+        except Exception:
+            pass
+
+    if not all_proba:
+        return {"signal": 0, "confidence": 0.0}
+
+    avg_proba = np.mean(all_proba, axis=0)
+    pred_cls = int(np.argmax(avg_proba))
     return {
         "signal": _CLASS_TO_LABEL[pred_cls],
-        "confidence": float(proba[pred_cls]),
+        "confidence": float(avg_proba[pred_cls]),
     }
 
 
@@ -313,9 +337,9 @@ class Backtester:
             return BacktestResult(symbol=symbol)
 
         # ── 6. train model on TRAIN data only ────────────────
-        console.print(f"    Training model on train portion …", end=" ")
+        console.print(f"    Training ensemble (XGB+LGB+CB) …", end=" ")
         sw = self.features.compute_sample_weights(y_train)
-        model = _train_model_on_data(X_train, y_train, feat_names, sw)
+        model = _train_ensemble_on_data(X_train, y_train, feat_names, sw)
         console.print("done")
 
         # ── 7. walk forward on TEST data ─────────────────────
@@ -456,7 +480,7 @@ class Backtester:
                 loc = X.index.get_loc(ts)
                 X_row = X.iloc[[loc]]
 
-                pred = _predict_with_model(model, X_row)
+                pred = _predict_with_ensemble(model, X_row)
                 signal = pred["signal"]
                 confidence = pred["confidence"]
 

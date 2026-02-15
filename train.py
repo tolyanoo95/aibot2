@@ -164,11 +164,18 @@ def train_model():
     Display.show_info("\nClass-balanced sample weights applied.")
 
     # ── train ────────────────────────────────────────────────
-    Display.show_info("Training XGBoost …")
+    Display.show_info("Training Ensemble (XGBoost + LightGBM + CatBoost) …")
     model = MLSignalModel(config.ML_MODEL_PATH)
     metrics = model.train(X_all, y_all, feat_names, sample_weights=sw)
 
-    Display.show_info(f"\nCV Accuracy : {metrics['cv_accuracy']:.4f} "
+    # per-model results
+    per_model = metrics.get("per_model", {})
+    for name, m in per_model.items():
+        Display.show_info(
+            f"  {name:<12s} CV: {m['cv_accuracy']:.4f} (±{m['cv_std']:.4f})"
+        )
+
+    Display.show_info(f"\nEnsemble CV : {metrics['cv_accuracy']:.4f} "
                       f"(±{metrics['cv_std']:.4f})")
     Display.show_info(
         f"Fold scores : {[f'{s:.4f}' for s in metrics['scores']]}"

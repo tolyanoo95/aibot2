@@ -82,12 +82,14 @@ RSI, MACD (line + histogram), Bollinger Bands (%B), EMAs (9/21/50), ATR, ADX (wi
 | Total Market Cap | CoinGecko `/global` | Overall market health |
 | Liquidation Zones | Computed from swing points | Squeeze/cascade risk levels |
 
-### ML Model (XGBoost)
+### ML Ensemble (XGBoost + LightGBM + CatBoost)
+- **3 models vote together** — averaged probabilities for more stable signals
 - **37 features** total (21 base + 12 multi-TF + 7 context including order book)
-- **Triple-barrier labeling** — labels based on future price movement (ATR-scaled), not arbitrary thresholds
-- **Time-series cross-validation** — 5-fold, respects temporal ordering (no data leakage)
+- **Triple-barrier labeling** — labels based on future price movement (ATR-scaled)
+- **Time-series cross-validation** — 5-fold per model, respects temporal ordering
 - **Class-balanced sample weights** — handles BUY/SELL/HOLD imbalance
 - Trained on ~100K samples across 10 pairs (~35 days of 5m data)
+- Each model learns differently → ensemble reduces false signals
 
 ### LLM Analysis (OpenAI)
 - **Professional decision framework** prompt with 6-step analysis:
@@ -258,7 +260,7 @@ All settings in `src/config.py`, overridable via `.env`:
 - **Python 3.12+**
 - **ccxt** — unified crypto exchange API (Binance USDM Futures)
 - **pandas + pandas_ta** — data manipulation and technical indicators
-- **XGBoost** — gradient boosting classifier for signal prediction
+- **XGBoost + LightGBM + CatBoost** — ensemble of 3 gradient boosting classifiers
 - **scikit-learn** — time-series cross-validation, metrics
 - **OpenAI API** — GPT-4o-mini with professional trading decision framework
 - **CoinGecko API** — global market data (free, no auth)

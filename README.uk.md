@@ -71,10 +71,11 @@ Binance Futures API          CoinGecko API
 | Загальна капіталізація | CoinGecko | Здоров'я ринку |
 | Зони ліквідацій | Розрахунок | Squeeze/cascade ризик |
 
-### ML-модель (XGBoost)
+### ML Ensemble (XGBoost + LightGBM + CatBoost)
+- **3 моделі голосують разом** — усереднені ймовірності
 - **37 фічей** (21 базових + 12 мульти-ТФ + 7 контекстних)
 - **Triple-barrier labeling** — мітки на основі ATR
-- **Time-series крос-валідація** — 5 фолдів
+- **Time-series крос-валідація** — 5 фолдів на кожну модель
 - **Збалансовані ваги** — коригує BUY/SELL/HOLD дисбаланс
 
 ### LLM-аналіз (OpenAI)
