@@ -127,6 +127,24 @@ After a 5m signal fires, the bot checks 1m candles for a better entry:
 | **LATE ~Xm** | Signal running for 15+ min — move may be partially done |
 | **ACTIVE HH:MM** | Tracked since first appearance, shows original entry levels |
 
+### Trade Monitoring (Trailing Stop + Health + Early Exit)
+Active trade management — works in both live scanner and backtester:
+
+| Feature | What it does |
+|---------|-------------|
+| **Trailing Stop** | Moves SL in your favor after price moves 1.5x ATR; trails at 1.0x ATR distance |
+| **Opposite Signal** | Auto-closes trade if ML reverses direction with >55% confidence |
+| **Health Check** | Monitors RSI, ADX, volume each scan: HEALTHY → WEAKENING → CLOSE_EARLY |
+| **Auto-Track** | Live scanner auto-opens monitoring when FRESH signal >55% appears |
+
+Live display shows:
+```
+╭───────────────── Open Trades (1) ──────────────────╮
+│  BNB/USDT SHORT  Entry 617.85 → Now 616.20 +0.27% │
+│  Trail SL: 617.00  |  HEALTHY  |  15min            │
+╰────────────────────────────────────────────────────╯
+```
+
 ### Hybrid Signal Generation
 - ML signal (60% weight) + LLM signal (40% weight) — weighted voting
 - **Agreement bonus** (+20% confidence) when both agree
@@ -143,10 +161,11 @@ After a 5m signal fires, the bot checks 1m candles for a better entry:
 ### Backtesting
 - **Out-of-sample**: trains on 70%, tests on unseen 30%
 - **Realistic execution**: entry at next candle open, commissions (0.08%), slippage (0.01%)
-- **Conservative**: SL assumed first when both SL+TP hit in same candle
+- **Trailing stop + early exit** active during backtest (same as live)
 - **Filters included**: volume and ADX filters active during backtest
 - **LLM backtest**: separate script for testing with GPT analysis per trade
-- **Backtest result**: +121-167% net PnL over ~10 days (out-of-sample, after commissions)
+- **Exit reasons**: TP, SL, Trail SL, Early Exit, Timeout
+- **Backtest result**: +97-167% net PnL over ~10 days (out-of-sample, after commissions)
 
 ### Auto-Retrain
 - `auto_retrain.py` — trains new model on fresh data
@@ -169,8 +188,9 @@ aibot/
 │   ├── market_context.py   # OI, L/S ratio, CoinGecko dominance, order book, liq zones
 │   ├── signal_generator.py # Hybrid signal combination + filters (ML + LLM → Signal)
 │   ├── entry_refiner.py    # 1m entry refinement (pullback, EMA/BB touch)
+│   ├── trade_monitor.py    # Trailing stop, health analysis, early exit
 │   ├── risk_manager.py     # Position sizing, daily loss limits
-│   └── display.py          # Rich console output (tables, panels, signal tracking)
+│   └── display.py          # Rich console output (tables, panels, trade monitoring)
 ├── models/                 # Saved ML models (.json + .pkl metadata)
 ├── main.py                 # Live scanner (loop or --once)
 ├── train.py                # ML training pipeline
@@ -252,6 +272,8 @@ All settings in `src/config.py`, overridable via `.env`:
 | `USE_1M_ENTRY` | `True` | Enable 1m entry refinement |
 | `FILTER_MIN_VOLUME_RATIO` | `0.8` | Volume filter threshold |
 | `FILTER_MIN_ADX` | `15.0` | ADX filter threshold |
+| `TRAILING_ACTIVATION_ATR` | `1.5` | Activate trailing after 1.5x ATR profit |
+| `TRAILING_DISTANCE_ATR` | `1.0` | Trail SL at 1.0x ATR behind best price |
 | `RISK_PER_TRADE` | `0.01` | 1% risk per trade |
 | `MAX_DAILY_LOSS` | `0.03` | 3% daily loss limit |
 

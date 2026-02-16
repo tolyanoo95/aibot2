@@ -109,11 +109,20 @@ Binance Futures API          CoinGecko API
 | **LATE ~Xm** | 15+ хвилин — рух частково пройшов |
 | **ACTIVE HH:MM** | Відстежується, показує оригінальні рівні |
 
+### Моніторинг угод (Trailing Stop + Health + Early Exit)
+| Функція | Що робить |
+|---------|-----------|
+| **Trailing Stop** | Рухає SL за ціною після 1.5x ATR профіту |
+| **Протилежний сигнал** | Закриває якщо ML розвернувся |
+| **Health Check** | Перевіряє RSI, ADX, volume: HEALTHY → WEAKENING → CLOSE_EARLY |
+| **Auto-Track** | Live сканер автоматично трекає коли з'являється FRESH > 55% |
+
 ### Бектестинг
 - **Out-of-sample**: навчання 70% / тест 30%
 - **Реалістичне виконання**: вхід по наступній свічці, комісії, проскальзування
+- **Trailing stop + early exit** активні в бектесті
 - **Фільтри включені** в бектест
-- **Результат**: +121-167% net PnL за ~10 днів
+- **Результат**: +97-167% net PnL за ~10 днів
 
 ### Авто-переобучення
 - Порівнює accuracy з поточною моделлю
@@ -134,8 +143,9 @@ aibot/
 │   ├── market_context.py   # OI, L/S, домінація, стакан, ліквідації
 │   ├── signal_generator.py # Гібрид ML+LLM + фільтри
 │   ├── entry_refiner.py    # 1m entry refinement
+│   ├── trade_monitor.py    # Trailing stop, health, early exit
 │   ├── risk_manager.py     # Розмір позиції
-│   └── display.py          # Консольний вивід + трекінг
+│   └── display.py          # Консольний вивід + моніторинг угод
 ├── main.py                 # Live сканер
 ├── train.py                # Навчання ML
 ├── backtest.py             # Out-of-sample бектест
