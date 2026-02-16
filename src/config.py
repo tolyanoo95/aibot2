@@ -55,8 +55,8 @@ class Config:
     USE_LLM: bool = True
 
     # ── Trailing Stop & Trade Monitoring ────────────────────
-    TRAILING_ACTIVATION_ATR: float = 1.5  # activate trailing after price moves 1.5x ATR in favor
-    TRAILING_DISTANCE_ATR: float = 1.0    # trail SL at 1.0x ATR behind best price
+    TRAILING_ACTIVATION_ATR: float = 2.0  # activate trailing after price moves 2.0x ATR in favor (2/3 of TP)
+    TRAILING_DISTANCE_ATR: float = 1.5    # trail SL at 1.5x ATR behind best price (wider = less chop)
 
     # ── Signal Filters ───────────────────────────────────────
     FILTER_MIN_VOLUME_RATIO: float = 0.8    # skip if volume < 80% of avg (dead market)

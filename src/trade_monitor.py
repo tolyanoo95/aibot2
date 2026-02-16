@@ -105,30 +105,34 @@ class TradeMonitor:
     ) -> TradeState:
         """Analyze trade health and recommend action."""
         issues = []
+        critical = False
 
-        # ── Opposite signal detected ─────────────────────────
-        if ml_confidence >= 0.55:
+        # ── Opposite signal detected (only strong reversal) ──
+        if ml_confidence >= 0.65:
             if state.direction == "LONG" and ml_signal == -1:
                 issues.append("ML reversed to SELL")
+                critical = True
             elif state.direction == "SHORT" and ml_signal == 1:
                 issues.append("ML reversed to BUY")
+                critical = True
 
         # ── Momentum fading ──────────────────────────────────
-        if adx < 15:
+        if adx < 12:
             issues.append(f"ADX weak ({adx:.0f})")
 
         # ── Volume dying ─────────────────────────────────────
-        if volume_ratio < 0.5:
+        if volume_ratio < 0.3:
             issues.append(f"Volume dead ({volume_ratio:.2f})")
 
         # ── RSI extreme against position ─────────────────────
-        if state.direction == "LONG" and rsi > 80:
+        if state.direction == "LONG" and rsi > 85:
             issues.append(f"RSI overbought ({rsi:.0f})")
-        elif state.direction == "SHORT" and rsi < 20:
+        elif state.direction == "SHORT" and rsi < 15:
             issues.append(f"RSI oversold ({rsi:.0f})")
 
         # ── Determine health status ──────────────────────────
-        if any("reversed" in i.lower() for i in issues):
+        # CLOSE_EARLY only on strong ML reversal (critical)
+        if critical:
             state.health = "CLOSE_EARLY"
             state.health_reason = " | ".join(issues)
         elif len(issues) >= 2:
@@ -170,9 +174,12 @@ class TradeMonitor:
         if state.bars_held >= max_bars:
             return True, "TIMEOUT", close
 
-        # ── Early exit on CLOSE_EARLY health ─────────────────
-        if state.health == "CLOSE_EARLY" and state.bars_held >= 3:
-            return True, "EARLY_EXIT", close
+        # ── Early exit: only on CLOSE_EARLY + trade is in profit ──
+        if state.health == "CLOSE_EARLY" and state.bars_held >= 4:
+            if state.direction == "LONG" and close > state.entry_price:
+                return True, "EARLY_EXIT", close
+            elif state.direction == "SHORT" and close < state.entry_price:
+                return True, "EARLY_EXIT", close
 
         return False, "", 0.0
 
