@@ -39,6 +39,7 @@ from src.data_fetcher import BinanceDataFetcher
 from src.features import FeatureEngineer
 from src.indicators import TechnicalIndicators
 from src.ml_model import MLSignalModel, _LABEL_TO_CLASS, _CLASS_TO_LABEL
+from src.trade_monitor import TradeMonitor, TradeState
 
 from rich import box
 from rich.console import Console
@@ -357,7 +358,7 @@ class Backtester:
 
     def _simulate(
         self,
-        model: xgb.XGBClassifier,
+        model: dict,
         df: pd.DataFrame,
         X: pd.DataFrame,
         symbol: str,
@@ -366,8 +367,10 @@ class Backtester:
         trades: list[Trade] = []
         in_trade = False
         current_trade: Optional[Trade] = None
+        trade_state: Optional[TradeState] = None
+        monitor = TradeMonitor(config)
         bars_since_exit = self.cooldown_bars
-        pending_signal: Optional[dict] = None  # signal waiting for next open
+        pending_signal: Optional[dict] = None
 
         for i in range(len(df)):
             ts = df.index[i]
@@ -383,7 +386,6 @@ class Backtester:
                 sig = pending_signal
                 pending_signal = None
 
-                # entry at open + slippage
                 if sig["direction"] == "LONG":
                     entry = price_open * (1 + self.slippage_pct / 100)
                 else:
@@ -410,37 +412,40 @@ class Backtester:
                     confidence=sig["confidence"],
                     max_bars=self.max_hold_bars,
                 )
+                trade_state = monitor.create_state(
+                    symbol, sig["direction"], entry, sl, tp,
+                )
                 in_trade = True
 
-            # ── check open trade ─────────────────────────────
-            if in_trade and current_trade is not None:
-                current_trade.bars_held += 1
-                hit_tp = hit_sl = False
+            # ── check open trade (with trailing + health) ────
+            if in_trade and current_trade is not None and trade_state is not None:
+                # get ML signal for health check
+                rsi = float(row["rsi"]) if pd.notna(row.get("rsi")) else 50
+                adx_val = float(row["ADX_14"]) if pd.notna(row.get("ADX_14")) else 25
+                vol_r = float(row["volume_ratio"]) if pd.notna(row.get("volume_ratio")) else 1.0
 
-                if current_trade.direction == "LONG":
-                    hit_tp = high >= current_trade.take_profit
-                    hit_sl = low <= current_trade.stop_loss
-                else:
-                    hit_tp = low <= current_trade.take_profit
-                    hit_sl = high >= current_trade.stop_loss
+                ml_sig = 0
+                ml_conf = 0.0
+                if ts in X.index:
+                    loc = X.index.get_loc(ts)
+                    pred = _predict_with_ensemble(model, X.iloc[[loc]])
+                    ml_sig = pred["signal"]
+                    ml_conf = pred["confidence"]
 
-                if hit_tp and hit_sl:
-                    # ambiguous — assume SL hit first (conservative)
-                    hit_tp = False
+                trade_state = monitor.update_trade(
+                    trade_state, high, low, price_close, atr,
+                    rsi=rsi, adx=adx_val, volume_ratio=vol_r,
+                    ml_signal=ml_sig, ml_confidence=ml_conf,
+                )
 
-                exit_price = 0.0
-                reason = ""
-                if hit_sl:
-                    exit_price = current_trade.stop_loss
-                    reason = "SL"
-                elif hit_tp:
-                    exit_price = current_trade.take_profit
-                    reason = "TP"
-                elif current_trade.bars_held >= self.max_hold_bars:
-                    exit_price = price_close
-                    reason = "TIMEOUT"
+                # update trade's SL to trailing SL
+                current_trade.stop_loss = trade_state.current_sl
 
-                if reason:
+                should_exit, reason, exit_price = monitor.check_exit(
+                    trade_state, high, low, price_close,
+                )
+
+                if should_exit and reason:
                     # apply slippage on exit
                     if current_trade.direction == "LONG":
                         exit_price *= (1 - self.slippage_pct / 100)
@@ -624,6 +629,8 @@ class Backtester:
 
         tp_n = sum(1 for t in all_trades if t.exit_reason == "TP")
         sl_n = sum(1 for t in all_trades if t.exit_reason == "SL")
+        trail_n = sum(1 for t in all_trades if t.exit_reason == "TRAIL_SL")
+        early_n = sum(1 for t in all_trades if t.exit_reason == "EARLY_EXIT")
         to_n = sum(1 for t in all_trades if t.exit_reason == "TIMEOUT")
 
         longs = [t for t in all_trades if t.direction == "LONG"]
@@ -651,9 +658,9 @@ class Backtester:
             f"[bold]Avg Loss:[/bold] [red]{agg.avg_loss:+.3f}%[/red]  "
             f"[bold]Avg Bars:[/bold] {agg.avg_bars:.1f} (~{agg.avg_bars * 5:.0f} min)\n"
             f"\n[bold]Exit Reasons:[/bold] "
-            f"TP: {tp_n} ({tp_n/agg.total*100:.0f}%) | "
-            f"SL: {sl_n} ({sl_n/agg.total*100:.0f}%) | "
-            f"Timeout: {to_n} ({to_n/agg.total*100:.0f}%)",
+            f"TP: {tp_n} | SL: {sl_n} | "
+            f"Trail SL: {trail_n} | Early: {early_n} | "
+            f"Timeout: {to_n}",
             title="Aggregate Performance (OUT-OF-SAMPLE)",
             border_style="cyan",
         ))

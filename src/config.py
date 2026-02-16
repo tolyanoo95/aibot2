@@ -54,6 +54,10 @@ class Config:
     LLM_ANALYSIS_INTERVAL: int = 15     # minutes between LLM calls per pair
     USE_LLM: bool = True
 
+    # ── Trailing Stop & Trade Monitoring ────────────────────
+    TRAILING_ACTIVATION_ATR: float = 1.5  # activate trailing after price moves 1.5x ATR in favor
+    TRAILING_DISTANCE_ATR: float = 1.0    # trail SL at 1.0x ATR behind best price
+
     # ── Signal Filters ───────────────────────────────────────
     FILTER_MIN_VOLUME_RATIO: float = 0.8    # skip if volume < 80% of avg (dead market)
     FILTER_MIN_ADX: float = 15.0            # skip if ADX < 15 (no trend at all)

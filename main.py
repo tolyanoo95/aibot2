@@ -31,6 +31,7 @@ from src.ml_model import MLSignalModel
 from src.entry_refiner import EntryRefiner
 from src.risk_manager import RiskManager
 from src.signal_generator import SignalGenerator
+from src.trade_monitor import TradeMonitor
 
 # ── logging ──────────────────────────────────────────────────
 logging.basicConfig(
