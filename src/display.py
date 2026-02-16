@@ -18,7 +18,7 @@ class Display:
     # ── main table ───────────────────────────────────────────
 
     @staticmethod
-    def show_signals(signals: list, scan_time: float = 0, interval: int = 300):
+    def show_signals(signals: list, scan_time: float = 0, interval: int = 300, open_trades: dict = None):
         console.clear()
 
         # header
@@ -142,6 +142,48 @@ class Display:
                     border_style="dim",
                 )
             )
+
+        # ── open trades panel ─────────────────────────────────
+        if open_trades:
+            trade_lines = []
+            for sym, state in open_trades.items():
+                # find current price from signals
+                cur_price = 0
+                for s in signals:
+                    if s.symbol == sym:
+                        cur_price = s.entry_price
+                        break
+
+                if cur_price and state.entry_price:
+                    if state.direction == "LONG":
+                        pnl = (cur_price - state.entry_price) / state.entry_price * 100
+                    else:
+                        pnl = (state.entry_price - cur_price) / state.entry_price * 100
+                    pnl_c = "green" if pnl > 0 else "red"
+                else:
+                    pnl = 0
+                    pnl_c = "dim"
+
+                trail_info = f"Trail SL: {_price(state.current_sl)}" if state.trailing_active else f"SL: {_price(state.current_sl)}"
+                health_c = {"HEALTHY": "green", "WEAKENING": "yellow", "CLOSE_EARLY": "red"}.get(state.health, "dim")
+
+                trade_lines.append(
+                    f"  {sym}  {state.direction}  "
+                    f"Entry {_price(state.entry_price)} → "
+                    f"Now {_price(cur_price)}  "
+                    f"[{pnl_c}]{pnl:+.2f}%[/{pnl_c}]  |  "
+                    f"{trail_info}  |  "
+                    f"[{health_c}]{state.health}[/{health_c}]  |  "
+                    f"{state.bars_held * 5}min"
+                )
+                if state.health_reason:
+                    trade_lines.append(f"    [dim]{state.health_reason}[/dim]")
+
+            console.print(Panel(
+                "\n".join(trade_lines),
+                title=f"Open Trades ({len(open_trades)})",
+                border_style="blue",
+            ))
 
         minutes = interval // 60
         console.print(

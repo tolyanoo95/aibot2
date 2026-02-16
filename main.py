@@ -62,6 +62,8 @@ class CryptoScanner:
         self._llm_cache: dict = {}
         self._llm_timestamps: dict[str, float] = {}
         self._active_signals: dict = {}  # symbol → {direction, entry, sl, tp, first_seen}
+        self._open_trades: dict = {}     # symbol → TradeState
+        self._trade_monitor = TradeMonitor(config)
 
     # ── single pair ──────────────────────────────────────────
 
@@ -216,9 +218,75 @@ class CryptoScanner:
             except Exception as exc:
                 logger.error("Error scanning %s: %s", symbol, exc)
 
+        # ── monitor open trades ──────────────────────────────
+        self._update_open_trades(signals)
+
         scan_time = time.time() - t0
-        Display.show_signals(signals, scan_time, config.SCAN_INTERVAL)
+        Display.show_signals(
+            signals, scan_time, config.SCAN_INTERVAL,
+            open_trades=self._open_trades,
+        )
         return signals
+
+    # ── trade monitoring ─────────────────────────────────────
+
+    def _update_open_trades(self, signals: list):
+        """Auto-track trades: open on FRESH > threshold, update each scan."""
+        from src.trade_monitor import TradeState
+        threshold = config.PREDICTION_THRESHOLD
+
+        for sig in signals:
+            sym = sig.symbol
+
+            # auto-open: new strong signal → start monitoring
+            if (
+                sig.direction != "NEUTRAL"
+                and sig.confidence >= threshold
+                and getattr(sig, "is_new", False)
+                and sym not in self._open_trades
+            ):
+                self._open_trades[sym] = self._trade_monitor.create_state(
+                    sym, sig.direction, sig.entry_price,
+                    sig.stop_loss, sig.take_profit,
+                )
+                logger.info("Trade opened: %s %s @ %s", sym, sig.direction, sig.entry_price)
+
+            # update existing trades
+            if sym in self._open_trades:
+                state = self._open_trades[sym]
+
+                # get current price from signal
+                price = sig.entry_price  # current close price
+                # approximate high/low from entry_price (we don't have bar data here)
+                # use ATR-based estimate
+                atr_est = abs(sig.stop_loss - sig.entry_price) / config.SL_ATR_MULTIPLIER if sig.stop_loss else 0
+
+                state = self._trade_monitor.update_trade(
+                    state,
+                    high=price + atr_est * 0.3,  # rough estimate
+                    low=price - atr_est * 0.3,
+                    close=price,
+                    atr=atr_est,
+                    ml_signal=sig.ml_signal,
+                    ml_confidence=sig.ml_confidence,
+                )
+                self._open_trades[sym] = state
+
+                # check if should close
+                should_exit, reason, _ = self._trade_monitor.check_exit(
+                    state, price + atr_est * 0.3, price - atr_est * 0.3, price,
+                )
+                if should_exit:
+                    # calculate PnL
+                    if state.direction == "LONG":
+                        pnl = (price - state.entry_price) / state.entry_price * 100
+                    else:
+                        pnl = (state.entry_price - price) / state.entry_price * 100
+                    logger.info(
+                        "Trade closed: %s %s (%s, PnL: %+.2f%%)",
+                        sym, state.direction, reason, pnl,
+                    )
+                    del self._open_trades[sym]
 
     # ── main loop ────────────────────────────────────────────
 
