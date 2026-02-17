@@ -13,6 +13,7 @@ catboost_info/
 
 # logs
 *.log
+paper_trades.json
 
 # IDE
 .vscode/

@@ -29,6 +29,7 @@ from src.llm_analyzer import LLMAnalyzer
 from src.market_context import MarketContext
 from src.ml_model import MLSignalModel
 from src.entry_refiner import EntryRefiner
+from src.executor import TradeExecutor
 from src.risk_manager import RiskManager
 from src.signal_generator import SignalGenerator
 from src.trade_monitor import TradeMonitor
@@ -61,9 +62,13 @@ class CryptoScanner:
 
         self._llm_cache: dict = {}
         self._llm_timestamps: dict[str, float] = {}
-        self._active_signals: dict = {}  # symbol → {direction, entry, sl, tp, first_seen}
-        self._open_trades: dict = {}     # symbol → TradeState
+        self._active_signals: dict = {}
+        self._open_trades: dict = {}
         self._trade_monitor = TradeMonitor(config)
+        self.executor = TradeExecutor(
+            config,
+            exchange=self.fetcher.exchange if config.TRADING_MODE == "live" else None,
+        )
 
     # ── single pair ──────────────────────────────────────────
 
@@ -254,25 +259,37 @@ class CryptoScanner:
     # ── trade monitoring ─────────────────────────────────────
 
     def _update_open_trades(self, signals: list):
-        """Auto-track trades: open on FRESH > threshold, update each scan."""
+        """Auto-track trades: open on FRESH > threshold, execute if enabled."""
         from src.trade_monitor import TradeState
         threshold = config.PREDICTION_THRESHOLD
 
         for sig in signals:
             sym = sig.symbol
 
-            # auto-open: new strong signal → start monitoring
+            # auto-open: new strong signal → open trade (paper or live)
             if (
                 sig.direction != "NEUTRAL"
                 and sig.confidence >= threshold
                 and getattr(sig, "is_new", False)
                 and sym not in self._open_trades
+                and not self.executor.has_position(sym)
+                and self.executor.check_daily_limit()
             ):
-                self._open_trades[sym] = self._trade_monitor.create_state(
-                    sym, sig.direction, sig.entry_price,
-                    sig.stop_loss, sig.take_profit,
+                # execute trade (paper log or real Binance order)
+                opened = self.executor.open_trade(
+                    symbol=sym,
+                    direction=sig.direction,
+                    entry_price=sig.entry_price,
+                    stop_loss=sig.stop_loss,
+                    take_profit=sig.take_profit,
+                    leverage=sig.leverage,
+                    confidence=sig.confidence,
                 )
-                logger.info("Trade opened: %s %s @ %s", sym, sig.direction, sig.entry_price)
+                if opened:
+                    self._open_trades[sym] = self._trade_monitor.create_state(
+                        sym, sig.direction, sig.entry_price,
+                        sig.stop_loss, sig.take_profit,
+                    )
 
             # update existing trades
             if sym in self._open_trades:
@@ -300,15 +317,7 @@ class CryptoScanner:
                     state, price + atr_est * 0.3, price - atr_est * 0.3, price,
                 )
                 if should_exit:
-                    # calculate PnL
-                    if state.direction == "LONG":
-                        pnl = (price - state.entry_price) / state.entry_price * 100
-                    else:
-                        pnl = (state.entry_price - price) / state.entry_price * 100
-                    logger.info(
-                        "Trade closed: %s %s (%s, PnL: %+.2f%%)",
-                        sym, state.direction, reason, pnl,
-                    )
+                    self.executor.close_trade(sym, price, reason)
                     del self._open_trades[sym]
 
     # ── main loop ────────────────────────────────────────────
@@ -323,6 +332,11 @@ class CryptoScanner:
         Display.show_info(f"LLM: {'enabled' if config.USE_LLM else 'disabled'}")
         Display.show_info("Market context: OI + L/S + Stablecoin Dom + Liq Zones")
         Display.show_info(f"1m entry refinement: {'ON' if config.USE_1M_ENTRY else 'OFF'}")
+        mode_color = "green" if config.TRADING_MODE == "paper" else "bold red"
+        Display.show_info(
+            f"Trading mode: [{mode_color}]{config.TRADING_MODE.upper()}[/{mode_color}]"
+            f" | Balance: ${config.TRADE_BALANCE_USDT} | Max positions: {config.MAX_OPEN_TRADES}"
+        )
         Display.show_info(f"Scan interval: {config.SCAN_INTERVAL}s")
         print()
 

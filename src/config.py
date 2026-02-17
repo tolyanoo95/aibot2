@@ -71,6 +71,13 @@ class Config:
     ENTRY_RSI_OVERSOLD: float = 30.0    # 1m RSI below this → good long entry
     ENTRY_RSI_OVERBOUGHT: float = 70.0  # 1m RSI above this → good short entry
 
+    # ── Trading Mode ────────────────────────────────────────
+    # "paper" = signals only, log trades, no real orders
+    # "live"  = auto-execute real orders on Binance
+    TRADING_MODE: str = os.getenv("TRADING_MODE", "paper")
+    TRADE_BALANCE_USDT: float = float(os.getenv("TRADE_BALANCE_USDT", "100"))  # balance for position sizing
+    MAX_OPEN_TRADES: int = int(os.getenv("MAX_OPEN_TRADES", "3"))              # max simultaneous positions
+
     # ── Scanner ──────────────────────────────────────────────
     SCAN_INTERVAL: int = 300            # seconds between scans (5 min)
 
