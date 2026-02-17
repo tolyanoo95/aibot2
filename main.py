@@ -210,13 +210,20 @@ class CryptoScanner:
         signals = []
         t0 = time.time()
 
-        for symbol in config.TRADING_PAIRS:
-            try:
-                sig = self.scan_pair(symbol)
-                if sig:
-                    signals.append(sig)
-            except Exception as exc:
-                logger.error("Error scanning %s: %s", symbol, exc)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {
+                pool.submit(self.scan_pair, sym): sym
+                for sym in config.TRADING_PAIRS
+            }
+            for future in as_completed(futures):
+                sym = futures[future]
+                try:
+                    sig = future.result()
+                    if sig:
+                        signals.append(sig)
+                except Exception as exc:
+                    logger.error("Error scanning %s: %s", sym, exc)
 
         # ── monitor open trades ──────────────────────────────
         self._update_open_trades(signals)

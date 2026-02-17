@@ -48,93 +48,83 @@ def train_model():
     all_X: list[pd.DataFrame] = []
     all_y: list[pd.Series] = []
 
-    for symbol in config.TRADING_PAIRS:
-        Display.show_info(f"Fetching {symbol} …")
-        try:
-            # ── primary (5m) ─────────────────────────────────
-            df_5m = fetcher.fetch_ohlcv_extended(
-                symbol, config.PRIMARY_TIMEFRAME,
-                total_candles=config.TRAIN_CANDLES,
-            )
-            if df_5m.empty or len(df_5m) < 200:
-                Display.show_error(f"  Not enough 5m data — skipping")
-                continue
-            Display.show_info(f"  5m : {len(df_5m)} candles")
+    def _process_pair(symbol: str):
+        """Fetch data, compute features & labels for one pair."""
+        df_5m = fetcher.fetch_ohlcv_extended(
+            symbol, config.PRIMARY_TIMEFRAME,
+            total_candles=config.TRAIN_CANDLES,
+        )
+        if df_5m.empty or len(df_5m) < 200:
+            return None, None, None
 
-            # ── secondary (15m) ──────────────────────────────
-            n_15m = _htf_candles(len(df_5m), config.SECONDARY_TIMEFRAME)
-            df_15m = fetcher.fetch_ohlcv_extended(
-                symbol, config.SECONDARY_TIMEFRAME, total_candles=n_15m,
-            )
-            Display.show_info(f"  15m: {len(df_15m)} candles")
+        n_15m = _htf_candles(len(df_5m), config.SECONDARY_TIMEFRAME)
+        df_15m = fetcher.fetch_ohlcv_extended(
+            symbol, config.SECONDARY_TIMEFRAME, total_candles=n_15m,
+        )
+        n_1h = _htf_candles(len(df_5m), config.TREND_TIMEFRAME)
+        df_1h = fetcher.fetch_ohlcv_extended(
+            symbol, config.TREND_TIMEFRAME, total_candles=n_1h,
+        )
+        ctx_df = mkt_ctx.fetch_training_context(symbol)
 
-            # ── trend (1h) ───────────────────────────────────
-            n_1h = _htf_candles(len(df_5m), config.TREND_TIMEFRAME)
-            df_1h = fetcher.fetch_ohlcv_extended(
-                symbol, config.TREND_TIMEFRAME, total_candles=n_1h,
-            )
-            Display.show_info(f"  1h : {len(df_1h)} candles")
+        df_5m = indicators.calculate_all(df_5m)
+        df_15m = indicators.calculate_all(df_15m) if not df_15m.empty else df_15m
+        df_1h = indicators.calculate_all(df_1h) if not df_1h.empty else df_1h
 
-            # ── market context (OI + L/S at 1h) ─────────────
-            Display.show_info("  Fetching OI + L/S history …")
-            ctx_df = mkt_ctx.fetch_training_context(symbol)
-            if not ctx_df.empty:
-                Display.show_info(f"  Context: {len(ctx_df)} rows (1h)")
-            else:
-                Display.show_info("  Context: no data (will use zeros)")
-            time.sleep(0.5)  # gentle on rate limits
+        if not ctx_df.empty:
+            df_5m = feature_eng.add_context_features(df_5m, ctx_df)
 
-            # ── indicators ───────────────────────────────────
-            df_5m = indicators.calculate_all(df_5m)
-            df_15m = indicators.calculate_all(df_15m) if not df_15m.empty else df_15m
-            df_1h = indicators.calculate_all(df_1h) if not df_1h.empty else df_1h
+        for col in ("funding_rate", "liq_pressure_enc",
+                    "dist_to_short_liq_pct", "dist_to_long_liq_pct",
+                    "bid_ask_imbalance"):
+            if col not in df_5m.columns:
+                df_5m[col] = 0.0
 
-            # ── merge context into primary ───────────────────
-            if not ctx_df.empty:
-                df_5m = feature_eng.add_context_features(df_5m, ctx_df)
+        X, feat_names = feature_eng.get_feature_matrix_mtf(df_5m, df_15m, df_1h)
 
-            # Add columns that realtime scanner provides so the
-            # model is trained with the full feature set:
-            #   funding_rate, liq_pressure_enc,
-            #   dist_to_short_liq_pct, dist_to_long_liq_pct
-            # During training we set them to 0 (neutral) because
-            # historical per-bar values are not available cheaply.
-            for col in ("funding_rate", "liq_pressure_enc",
-                        "dist_to_short_liq_pct", "dist_to_long_liq_pct",
-                        "bid_ask_imbalance"):
-                if col not in df_5m.columns:
-                    df_5m[col] = 0.0
+        y = feature_eng.create_labels(
+            df_5m,
+            tp_multiplier=config.LABEL_TP_MULTIPLIER,
+            sl_multiplier=config.LABEL_SL_MULTIPLIER,
+            max_bars=config.LABEL_MAX_BARS,
+        )
 
-            # ── multi-TF features ────────────────────────────
-            X, feat_names = feature_eng.get_feature_matrix_mtf(
-                df_5m, df_15m, df_1h,
-            )
+        common = X.index.intersection(y.index)
+        X = X.loc[common].iloc[: -config.LABEL_MAX_BARS]
+        y = y.loc[common].iloc[: -config.LABEL_MAX_BARS]
 
-            # ── labels ───────────────────────────────────────
-            y = feature_eng.create_labels(
-                df_5m,
-                tp_multiplier=config.LABEL_TP_MULTIPLIER,
-                sl_multiplier=config.LABEL_SL_MULTIPLIER,
-                max_bars=config.LABEL_MAX_BARS,
-            )
+        return X, y, feat_names
 
-            # align & trim tail
-            common = X.index.intersection(y.index)
-            X = X.loc[common].iloc[: -config.LABEL_MAX_BARS]
-            y = y.loc[common].iloc[: -config.LABEL_MAX_BARS]
+    # ── parallel data fetch + feature engineering ────────────
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            all_X.append(X)
-            all_y.append(y)
+    Display.show_info(f"Fetching {len(config.TRADING_PAIRS)} pairs in parallel …\n")
+    feat_names = None
 
-            n_buy = int((y == 1).sum())
-            n_sell = int((y == -1).sum())
-            n_hold = int((y == 0).sum())
-            Display.show_info(
-                f"  Samples: {len(X)} | BUY {n_buy} | SELL {n_sell} | HOLD {n_hold}"
-            )
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {
+            pool.submit(_process_pair, sym): sym
+            for sym in config.TRADING_PAIRS
+        }
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                X, y, fn = future.result()
+                if X is None:
+                    Display.show_error(f"  {sym}: not enough data — skipping")
+                    continue
+                feat_names = fn
+                all_X.append(X)
+                all_y.append(y)
 
-        except Exception as exc:
-            Display.show_error(f"  {symbol}: {exc}")
+                n_buy = int((y == 1).sum())
+                n_sell = int((y == -1).sum())
+                n_hold = int((y == 0).sum())
+                Display.show_info(
+                    f"  {sym}: {len(X)} samples | BUY {n_buy} | SELL {n_sell} | HOLD {n_hold}"
+                )
+            except Exception as exc:
+                Display.show_error(f"  {sym}: {exc}")
 
     if not all_X:
         Display.show_error("No training data collected — aborting.")
