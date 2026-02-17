@@ -346,13 +346,31 @@ class CryptoScanner:
                 self.run_scan()
                 if once:
                     break
-                time.sleep(config.SCAN_INTERVAL)
+                self._wait_for_next_candle()
             except KeyboardInterrupt:
                 Display.show_info("Scanner stopped by user.")
                 break
             except Exception as exc:
                 logger.error("Scan loop error: %s", exc)
                 time.sleep(30)
+
+    @staticmethod
+    def _wait_for_next_candle():
+        """Sleep until next 5m candle closes + 3 sec buffer."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        # seconds into current 5m candle
+        secs_into = (now.minute % 5) * 60 + now.second
+        # seconds until next 5m boundary
+        wait = (5 * 60) - secs_into + 3  # +3 sec buffer for Binance to finalize
+        if wait > 5 * 60:
+            wait = 3
+        mins = wait // 60
+        secs = wait % 60
+        Display.show_info(
+            f"Next scan at candle close in {mins}m {secs}s …"
+        )
+        time.sleep(wait)
 
     # ── helpers ──────────────────────────────────────────────
 
