@@ -196,12 +196,13 @@ class CryptoScanner:
         # ── track active signals ─────────────────────────────
         signal = self._track_signal(signal)
 
-        # ── INSTANT execution: open trade as soon as pair is ready ──
+        # ── INSTANT execution: only FRESH and NEW signals (not LATE) ──
         threshold = self.signal_gen.config.PREDICTION_THRESHOLD
         if (
             signal.direction != "NEUTRAL"
             and signal.confidence >= threshold
             and getattr(signal, "is_new", False)
+            and signal.age_bars <= 2          # FRESH (0) or NEW (1-2), skip LATE (3+)
             and not self.executor.has_position(symbol)
             and self.executor.check_daily_limit()
         ):
