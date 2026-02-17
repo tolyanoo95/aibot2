@@ -558,12 +558,31 @@ class Backtester:
         ))
 
         t0 = _time.time()
-        for symbol in pairs:
-            try:
-                result = self.backtest_pair(symbol, total_candles)
-                results.append(result)
-            except Exception as exc:
-                console.print(f"  [red]{symbol} error: {exc}[/red]")
+
+        if len(pairs) > 1:
+            # parallel execution
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            console.print(f"  [dim]Running {len(pairs)} pairs in parallel …[/dim]\n")
+
+            with ThreadPoolExecutor(max_workers=min(4, len(pairs))) as pool:
+                futures = {
+                    pool.submit(self.backtest_pair, sym, total_candles): sym
+                    for sym in pairs
+                }
+                for future in as_completed(futures):
+                    sym = futures[future]
+                    try:
+                        result = future.result()
+                        results.append(result)
+                    except Exception as exc:
+                        console.print(f"  [red]{sym} error: {exc}[/red]")
+        else:
+            for symbol in pairs:
+                try:
+                    result = self.backtest_pair(symbol, total_candles)
+                    results.append(result)
+                except Exception as exc:
+                    console.print(f"  [red]{symbol} error: {exc}[/red]")
 
         elapsed = _time.time() - t0
         console.print(f"\n  Total backtest time: {elapsed:.1f}s")
