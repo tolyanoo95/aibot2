@@ -211,7 +211,7 @@ class CryptoScanner:
         t0 = time.time()
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=10) as pool:
             futures = {
                 pool.submit(self.scan_pair, sym): sym
                 for sym in config.TRADING_PAIRS

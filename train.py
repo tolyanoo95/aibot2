@@ -101,7 +101,7 @@ def train_model():
     Display.show_info(f"Fetching {len(config.TRADING_PAIRS)} pairs in parallel …\n")
     feat_names = None
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {
             pool.submit(_process_pair, sym): sym
             for sym in config.TRADING_PAIRS

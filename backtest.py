@@ -564,7 +564,7 @@ class Backtester:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             console.print(f"  [dim]Running {len(pairs)} pairs in parallel …[/dim]\n")
 
-            with ThreadPoolExecutor(max_workers=min(4, len(pairs))) as pool:
+            with ThreadPoolExecutor(max_workers=min(10, len(pairs))) as pool:
                 futures = {
                     pool.submit(self.backtest_pair, sym, total_candles): sym
                     for sym in pairs
