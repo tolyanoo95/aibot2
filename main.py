@@ -211,19 +211,35 @@ class CryptoScanner:
         t0 = time.time()
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            futures = {
-                pool.submit(self.scan_pair, sym): sym
-                for sym in config.TRADING_PAIRS
-            }
-            for future in as_completed(futures):
-                sym = futures[future]
-                try:
-                    sig = future.result()
-                    if sig:
-                        signals.append(sig)
-                except Exception as exc:
-                    logger.error("Error scanning %s: %s", sym, exc)
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+        from src.display import console
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=20),
+            TextColumn("{task.completed}/{task.total} pairs"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Scanning …", total=len(config.TRADING_PAIRS))
+
+            with ThreadPoolExecutor(max_workers=10) as pool:
+                futures = {
+                    pool.submit(self.scan_pair, sym): sym
+                    for sym in config.TRADING_PAIRS
+                }
+                for future in as_completed(futures):
+                    sym = futures[future]
+                    try:
+                        sig = future.result()
+                        if sig:
+                            signals.append(sig)
+                    except Exception as exc:
+                        logger.error("Error scanning %s: %s", sym, exc)
+                    progress.advance(task)
+                    progress.update(task, description=f"Scanned {sym}")
 
         # ── monitor open trades ──────────────────────────────
         self._update_open_trades(signals)
