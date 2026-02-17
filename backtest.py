@@ -268,15 +268,14 @@ class Backtester:
         self,
         symbol: str,
         total_candles: int = 10000,
-        _progress=None,
-        _task=None,
+        _status_dict: dict = None,
     ) -> BacktestResult:
         def _status(msg):
-            if _progress and _task is not None:
-                _progress.update(_task, description=f"[cyan]{symbol}[/cyan] — {msg}")
+            if _status_dict is not None:
+                _status_dict[symbol] = msg
 
         # ── 1. fetch data ────────────────────────────────────
-        _status("Fetching 5m …")
+        _status("[yellow]Fetching 5m …[/yellow]")
         df_5m = self.fetcher.fetch_ohlcv_extended(
             symbol, config.PRIMARY_TIMEFRAME, total_candles=total_candles,
         )
@@ -284,7 +283,7 @@ class Backtester:
             _status("[red]No data[/red]")
             return BacktestResult(symbol=symbol)
 
-        _status("Fetching 15m + 1h …")
+        _status("[yellow]Fetching 15m + 1h …[/yellow]")
         df_15m = self.fetcher.fetch_ohlcv_extended(
             symbol, config.SECONDARY_TIMEFRAME,
             total_candles=max(200, total_candles // 3),
@@ -335,12 +334,12 @@ class Backtester:
             return BacktestResult(symbol=symbol)
 
         # ── 6. train model on TRAIN data only ────────────────
-        _status("Training ensemble …")
+        _status("[yellow]Training ensemble …[/yellow]")
         sw = self.features.compute_sample_weights(y_train)
         model = _train_ensemble_on_data(X_train, y_train, feat_names, sw)
 
         # ── 7. walk forward on TEST data ─────────────────────
-        _status("Simulating trades …")
+        _status("[yellow]Simulating trades …[/yellow]")
         trades = self._simulate(model, df_test, X_test, symbol)
         _status(f"[green]Done — {len(trades)} trades[/green]")
 
@@ -554,29 +553,38 @@ class Backtester:
 
         t0 = _time.time()
 
-        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+        import threading
+        from rich.live import Live
+        from concurrent.futures import ThreadPoolExecutor
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("{task.description}", justify="left", style=""),
-            BarColumn(bar_width=30),
-            TextColumn("{task.completed}/{task.total}"),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            main_task = progress.add_task("Overall", total=len(pairs))
+        status_dict: dict[str, str] = {s: "Waiting …" for s in pairs}
 
-            for symbol in pairs:
-                pair_task = progress.add_task(f"[cyan]{symbol}[/cyan] — Starting …", total=None)
-                try:
-                    result = self.backtest_pair(
-                        symbol, total_candles,
-                        _progress=progress, _task=pair_task,
-                    )
-                    results.append(result)
-                except Exception as exc:
-                    progress.update(pair_task, description=f"[red]{symbol} — ERROR: {exc}[/red]")
-                progress.advance(main_task)
+        def _build_table() -> Table:
+            t = Table(box=box.SIMPLE, expand=True)
+            t.add_column("Pair", style="cyan", width=12)
+            t.add_column("Status", width=50)
+            for sym in pairs:
+                t.add_row(sym, status_dict.get(sym, ""))
+            elapsed_so_far = _time.time() - t0
+            t.title = f"Backtesting {len(pairs)} pairs in parallel — {elapsed_so_far:.0f}s"
+            return t
+
+        def _run_pair(symbol):
+            try:
+                result = self.backtest_pair(
+                    symbol, total_candles, _status_dict=status_dict,
+                )
+                results.append(result)
+            except Exception as exc:
+                status_dict[symbol] = f"[red]Error: {exc}[/red]"
+
+        with Live(_build_table(), console=console, refresh_per_second=4) as live:
+            with ThreadPoolExecutor(max_workers=10) as pool:
+                futures = [pool.submit(_run_pair, sym) for sym in pairs]
+                while not all(f.done() for f in futures):
+                    live.update(_build_table())
+                    _time.sleep(0.25)
+                live.update(_build_table())
 
         elapsed = _time.time() - t0
         console.print(f"\n  Total backtest time: {elapsed:.1f}s")
