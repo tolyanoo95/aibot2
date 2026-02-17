@@ -406,11 +406,17 @@ class CryptoScanner:
         for fname in ("scanner.log", "trades.log", "paper_trades.json"):
             if os.path.exists(fname) and os.path.getsize(fname) > 0:
                 dest = os.path.join(archive_dir, f"{stamp}_{fname}")
-                shutil.move(fname, dest)
-                logger.info("Archived %s → %s", fname, dest)
+                shutil.copy2(fname, dest)
+                # truncate the original file (keep handler valid)
+                with open(fname, "w"):
+                    pass
 
     def run(self, once: bool = False):
         self._archive_logs()
+        # ensure log files exist for handlers
+        for f in ("scanner.log", "trades.log"):
+            if not os.path.exists(f):
+                open(f, "a").close()
         Display.show_info("Starting AI Crypto Futures Scanner …")
         Display.show_info(f"Pairs: {', '.join(config.TRADING_PAIRS)}")
         Display.show_info(f"Primary TF: {config.PRIMARY_TIMEFRAME}")
