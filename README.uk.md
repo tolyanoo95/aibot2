@@ -112,10 +112,20 @@ Binance Futures API          CoinGecko API
 ### Моніторинг угод (Trailing Stop + Health + Early Exit)
 | Функція | Що робить |
 |---------|-----------|
-| **Trailing Stop** | Рухає SL за ціною після 1.5x ATR профіту |
-| **Протилежний сигнал** | Закриває якщо ML розвернувся |
+| **Trailing Stop** | Рухає SL за ціною після 2.0x ATR профіту, тримає 1.5x ATR |
+| **Протилежний сигнал** | Закриває якщо ML розвернувся (>65%) і угода в прибутку |
 | **Health Check** | Перевіряє RSI, ADX, volume: HEALTHY → WEAKENING → CLOSE_EARLY |
 | **Auto-Track** | Live сканер автоматично трекає коли з'являється FRESH > 55% |
+
+### Paper & Live Trading
+| Режим | Що робить |
+|-------|-----------|
+| **`TRADING_MODE=paper`** | Логує угоди в `paper_trades.json`, без реальних ордерів |
+| **`TRADING_MODE=live`** | Автоматичні market ордери на Binance з SL/TP |
+
+- **Миттєве виконання** — ордер відкривається як тільки пара просканована (~6-8 сек)
+- **10 пар паралельно** — весь скан за 8 секунд
+- **Макс 3 позиції** одночасно, денний ліміт збитків
 
 ### Бектестинг
 - **Out-of-sample**: навчання 70% / тест 30%
@@ -144,6 +154,7 @@ aibot/
 │   ├── signal_generator.py # Гібрид ML+LLM + фільтри
 │   ├── entry_refiner.py    # 1m entry refinement
 │   ├── trade_monitor.py    # Trailing stop, health, early exit
+│   ├── executor.py         # Paper/live виконання ордерів
 │   ├── risk_manager.py     # Розмір позиції
 │   └── display.py          # Консольний вивід + моніторинг угод
 ├── main.py                 # Live сканер

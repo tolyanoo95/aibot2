@@ -132,8 +132,8 @@ Active trade management — works in both live scanner and backtester:
 
 | Feature | What it does |
 |---------|-------------|
-| **Trailing Stop** | Moves SL in your favor after price moves 1.5x ATR; trails at 1.0x ATR distance |
-| **Opposite Signal** | Auto-closes trade if ML reverses direction with >55% confidence |
+| **Trailing Stop** | Moves SL in your favor after price moves 2.0x ATR; trails at 1.5x ATR distance |
+| **Opposite Signal** | Auto-closes trade if ML reverses direction with >65% confidence (only if in profit) |
 | **Health Check** | Monitors RSI, ADX, volume each scan: HEALTHY → WEAKENING → CLOSE_EARLY |
 | **Auto-Track** | Live scanner auto-opens monitoring when FRESH signal >55% appears |
 
@@ -151,6 +151,24 @@ Live display shows:
 - **Disagreement = NEUTRAL** — when ML and LLM contradict, bot stays out
 - ATR-based SL/TP (default R:R = 1:3, backtest-optimized)
 - Dynamic leverage based on confidence and risk level
+
+### Paper & Live Trading
+| Mode | What it does |
+|------|-------------|
+| **`TRADING_MODE=paper`** | Logs trades to `paper_trades.json`, no real orders. Safe for testing. |
+| **`TRADING_MODE=live`** | Auto-executes market orders on Binance with SL/TP. Real money! |
+
+Both modes feature:
+- **Instant execution** — trade opens as soon as pair is scanned (~6-8 sec), not after all 10 finish
+- **Position sizing** based on `TRADE_BALANCE_USDT` and risk per trade
+- **Max open trades** limit (default 3 simultaneous positions)
+- **Daily loss limit** — stops trading if daily loss exceeds 3%
+- Paper trades persist between restarts (`paper_trades.json`)
+
+### Parallel Execution
+- **Live scanner**: 10 pairs scanned simultaneously (~8 sec total vs ~60 sec sequential)
+- **Training**: 10 pairs fetched & processed in parallel with live status table
+- **Backtesting**: 10 pairs backtested in parallel with live progress display
 
 ### Risk Management
 - Configurable risk per trade (default 1%)
@@ -189,6 +207,7 @@ aibot/
 │   ├── signal_generator.py # Hybrid signal combination + filters (ML + LLM → Signal)
 │   ├── entry_refiner.py    # 1m entry refinement (pullback, EMA/BB touch)
 │   ├── trade_monitor.py    # Trailing stop, health analysis, early exit
+│   ├── executor.py         # Paper/live trade execution (Binance orders)
 │   ├── risk_manager.py     # Position sizing, daily loss limits
 │   └── display.py          # Rich console output (tables, panels, trade monitoring)
 ├── models/                 # Saved ML models (.json + .pkl metadata)
@@ -272,8 +291,11 @@ All settings in `src/config.py`, overridable via `.env`:
 | `USE_1M_ENTRY` | `True` | Enable 1m entry refinement |
 | `FILTER_MIN_VOLUME_RATIO` | `0.8` | Volume filter threshold |
 | `FILTER_MIN_ADX` | `15.0` | ADX filter threshold |
-| `TRAILING_ACTIVATION_ATR` | `1.5` | Activate trailing after 1.5x ATR profit |
-| `TRAILING_DISTANCE_ATR` | `1.0` | Trail SL at 1.0x ATR behind best price |
+| `TRAILING_ACTIVATION_ATR` | `2.0` | Activate trailing after 2.0x ATR profit |
+| `TRAILING_DISTANCE_ATR` | `1.5` | Trail SL at 1.5x ATR behind best price |
+| `TRADING_MODE` | `paper` | `paper` = log only, `live` = real Binance orders |
+| `TRADE_BALANCE_USDT` | `100` | Balance for position sizing |
+| `MAX_OPEN_TRADES` | `3` | Max simultaneous positions |
 | `RISK_PER_TRADE` | `0.01` | 1% risk per trade |
 | `MAX_DAILY_LOSS` | `0.03` | 3% daily loss limit |
 
