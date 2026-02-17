@@ -44,6 +44,12 @@ class Signal:
     age_bars: int = 0       # how many past bars had the same signal (freshness)
     filter_reason: str = "" # why signal was filtered (empty = passed)
 
+    # candle data for accurate paper trading
+    candle_high: float = 0.0
+    candle_low: float = 0.0
+    candle_atr: float = 0.0
+    candle_rsi: float = 50.0
+
 
 class SignalGenerator:
     """Weighted voting of ML + LLM into a final signal."""

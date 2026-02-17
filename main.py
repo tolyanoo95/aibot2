@@ -113,7 +113,10 @@ class CryptoScanner:
         # current state
         last_row = data["primary"].iloc[-1]
         price = float(last_row["close"])
+        high = float(last_row["high"])
+        low = float(last_row["low"])
         atr = float(last_row.get("atr", 0))
+        rsi = float(last_row.get("rsi", 50)) if pd.notna(last_row.get("rsi")) else 50.0
         volume_ratio = float(last_row.get("volume_ratio", 1.0)) if pd.notna(last_row.get("volume_ratio")) else 1.0
         adx = float(last_row.get("ADX_14", 25.0)) if pd.notna(last_row.get("ADX_14")) else 25.0
         ob_imbalance = ctx.get("bid_ask_imbalance", 0)
@@ -128,6 +131,12 @@ class CryptoScanner:
             adx=adx,
             bid_ask_imbalance=ob_imbalance,
         )
+
+        # store candle data for accurate paper trading
+        signal.candle_high = high
+        signal.candle_low = low
+        signal.candle_atr = atr
+        signal.candle_rsi = rsi
 
         # ── check freshness: how many past bars had same direction ──
         if signal.direction != "NEUTRAL" and len(X) > 6:
@@ -335,30 +344,33 @@ class CryptoScanner:
         for sig in signals:
             sym = sig.symbol
 
-            # update existing trades
+            # update existing trades with REAL candle high/low
             if sym in self._open_trades:
                 state = self._open_trades[sym]
 
-                # get current price from signal
-                price = sig.entry_price  # current close price
-                # approximate high/low from entry_price (we don't have bar data here)
-                # use ATR-based estimate
-                atr_est = abs(sig.stop_loss - sig.entry_price) / config.SL_ATR_MULTIPLIER if sig.stop_loss else 0
+                price = sig.entry_price
+                high = getattr(sig, "candle_high", price)
+                low = getattr(sig, "candle_low", price)
+                atr = getattr(sig, "candle_atr", 0)
+                rsi = getattr(sig, "candle_rsi", 50)
 
                 state = self._trade_monitor.update_trade(
                     state,
-                    high=price + atr_est * 0.3,  # rough estimate
-                    low=price - atr_est * 0.3,
+                    high=high,
+                    low=low,
                     close=price,
-                    atr=atr_est,
+                    atr=atr,
+                    rsi=rsi,
+                    adx=float(sig.ml_confidence * 100),  # rough proxy
+                    volume_ratio=1.0,
                     ml_signal=sig.ml_signal,
                     ml_confidence=sig.ml_confidence,
                 )
                 self._open_trades[sym] = state
 
-                # check if should close
+                # check exit using REAL high/low
                 should_exit, reason, _ = self._trade_monitor.check_exit(
-                    state, price + atr_est * 0.3, price - atr_est * 0.3, price,
+                    state, high, low, price,
                 )
                 if should_exit:
                     result = self.executor.close_trade(sym, price, reason)
