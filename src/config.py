@@ -40,7 +40,7 @@ class Config:
     PREDICTION_THRESHOLD: float = 0.55  # min confidence for a signal (backtest-optimized)
 
     # ── Trade parameters (backtest-optimized) ────────────────
-    SL_ATR_MULTIPLIER: float = 1.0      # stop-loss = ATR * this
+    SL_ATR_MULTIPLIER: float = 1.5      # stop-loss = ATR * this (backtest-optimized)
     TP_ATR_MULTIPLIER: float = 3.0      # take-profit = ATR * this  (R:R = 1:3)
     MAX_HOLD_BARS: int = 12             # max holding time in candles (60 min on 5m)
 
