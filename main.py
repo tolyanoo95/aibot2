@@ -152,6 +152,26 @@ class CryptoScanner:
 
         # ── track active signals ─────────────────────────────
         signal = self._track_signal(signal)
+
+        # ── INSTANT execution: open trade as soon as pair is ready ──
+        threshold = self.signal_gen.config.PREDICTION_THRESHOLD
+        if (
+            signal.direction != "NEUTRAL"
+            and signal.confidence >= threshold
+            and getattr(signal, "is_new", False)
+            and not self.executor.has_position(symbol)
+            and self.executor.check_daily_limit()
+        ):
+            self.executor.open_trade(
+                symbol=symbol,
+                direction=signal.direction,
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                take_profit=signal.take_profit,
+                leverage=signal.leverage,
+                confidence=signal.confidence,
+            )
+
         return signal
 
     def _check_signal_age(self, X, direction: str, lookback: int = 6) -> int:
@@ -259,37 +279,18 @@ class CryptoScanner:
     # ── trade monitoring ─────────────────────────────────────
 
     def _update_open_trades(self, signals: list):
-        """Auto-track trades: open on FRESH > threshold, execute if enabled."""
-        from src.trade_monitor import TradeState
-        threshold = config.PREDICTION_THRESHOLD
+        """Sync trade monitor with executor positions, update health & trailing."""
+
+        # sync: if executor has position but monitor doesn't, add it
+        for sym, pos in self.executor.get_open_positions().items():
+            if sym not in self._open_trades:
+                self._open_trades[sym] = self._trade_monitor.create_state(
+                    sym, pos["direction"], pos["entry_price"],
+                    pos["stop_loss"], pos["take_profit"],
+                )
 
         for sig in signals:
             sym = sig.symbol
-
-            # auto-open: new strong signal → open trade (paper or live)
-            if (
-                sig.direction != "NEUTRAL"
-                and sig.confidence >= threshold
-                and getattr(sig, "is_new", False)
-                and sym not in self._open_trades
-                and not self.executor.has_position(sym)
-                and self.executor.check_daily_limit()
-            ):
-                # execute trade (paper log or real Binance order)
-                opened = self.executor.open_trade(
-                    symbol=sym,
-                    direction=sig.direction,
-                    entry_price=sig.entry_price,
-                    stop_loss=sig.stop_loss,
-                    take_profit=sig.take_profit,
-                    leverage=sig.leverage,
-                    confidence=sig.confidence,
-                )
-                if opened:
-                    self._open_trades[sym] = self._trade_monitor.create_state(
-                        sym, sig.direction, sig.entry_price,
-                        sig.stop_loss, sig.take_profit,
-                    )
 
             # update existing trades
             if sym in self._open_trades:
