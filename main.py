@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 import time
 
@@ -391,7 +392,25 @@ class CryptoScanner:
 
     # ── main loop ────────────────────────────────────────────
 
+    @staticmethod
+    def _archive_logs():
+        """Move old logs to archive folder on startup."""
+        import shutil
+        from datetime import datetime
+
+        archive_dir = "logs_archive"
+        os.makedirs(archive_dir, exist_ok=True)
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        for fname in ("scanner.log", "trades.log", "paper_trades.json"):
+            if os.path.exists(fname) and os.path.getsize(fname) > 0:
+                dest = os.path.join(archive_dir, f"{stamp}_{fname}")
+                shutil.move(fname, dest)
+                logger.info("Archived %s → %s", fname, dest)
+
     def run(self, once: bool = False):
+        self._archive_logs()
         Display.show_info("Starting AI Crypto Futures Scanner …")
         Display.show_info(f"Pairs: {', '.join(config.TRADING_PAIRS)}")
         Display.show_info(f"Primary TF: {config.PRIMARY_TIMEFRAME}")
