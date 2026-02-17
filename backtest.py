@@ -268,20 +268,23 @@ class Backtester:
         self,
         symbol: str,
         total_candles: int = 10000,
+        _progress=None,
+        _task=None,
     ) -> BacktestResult:
-        console.print(f"\n  [cyan]{symbol}[/cyan]")
+        def _status(msg):
+            if _progress and _task is not None:
+                _progress.update(_task, description=f"[cyan]{symbol}[/cyan] — {msg}")
 
         # ── 1. fetch data ────────────────────────────────────
-        console.print(f"    Fetching 5m …", end=" ")
+        _status("Fetching 5m …")
         df_5m = self.fetcher.fetch_ohlcv_extended(
             symbol, config.PRIMARY_TIMEFRAME, total_candles=total_candles,
         )
         if df_5m.empty or len(df_5m) < 500:
-            console.print(f"[red]Not enough data[/red]")
+            _status("[red]No data[/red]")
             return BacktestResult(symbol=symbol)
-        console.print(f"{len(df_5m)} candles")
 
-        console.print(f"    Fetching 15m + 1h …", end=" ")
+        _status("Fetching 15m + 1h …")
         df_15m = self.fetcher.fetch_ohlcv_extended(
             symbol, config.SECONDARY_TIMEFRAME,
             total_candles=max(200, total_candles // 3),
@@ -290,7 +293,6 @@ class Backtester:
             symbol, config.TREND_TIMEFRAME,
             total_candles=max(200, total_candles // 12),
         )
-        console.print("done")
 
         # ── 2. indicators ────────────────────────────────────
         df_5m = self.indicators.calculate_all(df_5m)
@@ -328,24 +330,19 @@ class Backtester:
         test_end = X_test.index[-1]
         df_test = df_5m.loc[test_start:test_end]
 
-        console.print(
-            f"    Train: {len(X_train)} | Test: {len(X_test)} (OUT-OF-SAMPLE)"
-        )
-
         if len(X_train) < 200 or len(X_test) < 100:
-            console.print(f"    [red]Not enough data for split[/red]")
+            _status("[red]Not enough data[/red]")
             return BacktestResult(symbol=symbol)
 
         # ── 6. train model on TRAIN data only ────────────────
-        console.print(f"    Training ensemble (XGB+LGB+CB) …", end=" ")
+        _status("Training ensemble …")
         sw = self.features.compute_sample_weights(y_train)
         model = _train_ensemble_on_data(X_train, y_train, feat_names, sw)
-        console.print("done")
 
         # ── 7. walk forward on TEST data ─────────────────────
-        console.print(f"    Simulating trades …", end=" ")
+        _status("Simulating trades …")
         trades = self._simulate(model, df_test, X_test, symbol)
-        console.print(f"{len(trades)} trades")
+        _status(f"[green]Done — {len(trades)} trades[/green]")
 
         return BacktestResult(
             symbol=symbol,
@@ -557,12 +554,29 @@ class Backtester:
 
         t0 = _time.time()
 
-        for symbol in pairs:
-            try:
-                result = self.backtest_pair(symbol, total_candles)
-                results.append(result)
-            except Exception as exc:
-                console.print(f"  [red]{symbol} error: {exc}[/red]")
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}", justify="left", style=""),
+            BarColumn(bar_width=30),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            main_task = progress.add_task("Overall", total=len(pairs))
+
+            for symbol in pairs:
+                pair_task = progress.add_task(f"[cyan]{symbol}[/cyan] — Starting …", total=None)
+                try:
+                    result = self.backtest_pair(
+                        symbol, total_candles,
+                        _progress=progress, _task=pair_task,
+                    )
+                    results.append(result)
+                except Exception as exc:
+                    progress.update(pair_task, description=f"[red]{symbol} — ERROR: {exc}[/red]")
+                progress.advance(main_task)
 
         elapsed = _time.time() - t0
         console.print(f"\n  Total backtest time: {elapsed:.1f}s")

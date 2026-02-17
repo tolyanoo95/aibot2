@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 """
-Training pipeline for the ML signal model (v3).
-────────────────────────────────────────────────
-Now fetches multi-timeframe data + market context (OI, L/S ratio)
-for richer feature engineering.
-
-Usage:
-    python train.py
+Training pipeline for the ML signal model.
 """
 
 import logging
@@ -14,6 +8,11 @@ import sys
 import time
 
 import pandas as pd
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+from rich.panel import Panel
+from rich.table import Table
+from rich import box
 
 from src.config import config
 from src.data_fetcher import BinanceDataFetcher
@@ -24,11 +23,12 @@ from src.market_context import MarketContext
 from src.ml_model import MLSignalModel
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-logger = logging.getLogger(__name__)
+
+console = Console()
 
 _HTF_RATIO = {"15m": 3, "1h": 12}
 
@@ -38,7 +38,13 @@ def _htf_candles(primary_count: int, tf: str) -> int:
 
 
 def train_model():
-    Display.show_info("=== ML Training Pipeline (v3 — multi-TF + context) ===\n")
+    console.print(Panel(
+        "[bold cyan]ML Training Pipeline[/bold cyan]\n"
+        f"Pairs: {len(config.TRADING_PAIRS)} | "
+        f"Candles: {config.TRAIN_CANDLES} | "
+        f"Model: Ensemble (XGBoost + LightGBM + CatBoost)",
+        box=box.DOUBLE,
+    ))
 
     fetcher = BinanceDataFetcher(config)
     indicators = TechnicalIndicators()
@@ -47,144 +53,174 @@ def train_model():
 
     all_X: list[pd.DataFrame] = []
     all_y: list[pd.Series] = []
-
-    def _process_pair(symbol: str):
-        """Fetch data, compute features & labels for one pair."""
-        df_5m = fetcher.fetch_ohlcv_extended(
-            symbol, config.PRIMARY_TIMEFRAME,
-            total_candles=config.TRAIN_CANDLES,
-        )
-        if df_5m.empty or len(df_5m) < 200:
-            return None, None, None
-
-        n_15m = _htf_candles(len(df_5m), config.SECONDARY_TIMEFRAME)
-        df_15m = fetcher.fetch_ohlcv_extended(
-            symbol, config.SECONDARY_TIMEFRAME, total_candles=n_15m,
-        )
-        n_1h = _htf_candles(len(df_5m), config.TREND_TIMEFRAME)
-        df_1h = fetcher.fetch_ohlcv_extended(
-            symbol, config.TREND_TIMEFRAME, total_candles=n_1h,
-        )
-        ctx_df = mkt_ctx.fetch_training_context(symbol)
-
-        df_5m = indicators.calculate_all(df_5m)
-        df_15m = indicators.calculate_all(df_15m) if not df_15m.empty else df_15m
-        df_1h = indicators.calculate_all(df_1h) if not df_1h.empty else df_1h
-
-        if not ctx_df.empty:
-            df_5m = feature_eng.add_context_features(df_5m, ctx_df)
-
-        for col in ("funding_rate", "liq_pressure_enc",
-                    "dist_to_short_liq_pct", "dist_to_long_liq_pct",
-                    "bid_ask_imbalance"):
-            if col not in df_5m.columns:
-                df_5m[col] = 0.0
-
-        X, feat_names = feature_eng.get_feature_matrix_mtf(df_5m, df_15m, df_1h)
-
-        y = feature_eng.create_labels(
-            df_5m,
-            tp_multiplier=config.LABEL_TP_MULTIPLIER,
-            sl_multiplier=config.LABEL_SL_MULTIPLIER,
-            max_bars=config.LABEL_MAX_BARS,
-        )
-
-        common = X.index.intersection(y.index)
-        X = X.loc[common].iloc[: -config.LABEL_MAX_BARS]
-        y = y.loc[common].iloc[: -config.LABEL_MAX_BARS]
-
-        return X, y, feat_names
-
-    # ── parallel data fetch + feature engineering ────────────
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    Display.show_info(f"Fetching {len(config.TRADING_PAIRS)} pairs in parallel …\n")
     feat_names = None
 
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {
-            pool.submit(_process_pair, sym): sym
-            for sym in config.TRADING_PAIRS
-        }
-        for future in as_completed(futures):
-            sym = futures[future]
+    # ── Step 1: Fetch & process data ─────────────────────────
+    pair_table = Table(title="Step 1/3 — Data Collection", box=box.SIMPLE)
+    pair_table.add_column("Pair", style="cyan", width=12)
+    pair_table.add_column("5m", justify="right", width=8)
+    pair_table.add_column("15m", justify="right", width=8)
+    pair_table.add_column("1h", justify="right", width=8)
+    pair_table.add_column("Context", justify="right", width=10)
+    pair_table.add_column("Samples", justify="right", width=10)
+    pair_table.add_column("BUY", justify="right", width=8, style="green")
+    pair_table.add_column("SELL", justify="right", width=8, style="red")
+    pair_table.add_column("HOLD", justify="right", width=8, style="yellow")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Fetching pairs …", total=len(config.TRADING_PAIRS))
+
+        for symbol in config.TRADING_PAIRS:
+            progress.update(task, description=f"Fetching {symbol} …")
             try:
-                X, y, fn = future.result()
-                if X is None:
-                    Display.show_error(f"  {sym}: not enough data — skipping")
+                df_5m = fetcher.fetch_ohlcv_extended(
+                    symbol, config.PRIMARY_TIMEFRAME,
+                    total_candles=config.TRAIN_CANDLES,
+                )
+                if df_5m.empty or len(df_5m) < 200:
+                    pair_table.add_row(symbol, "[red]—[/red]", "—", "—", "—", "—", "—", "—", "—")
+                    progress.advance(task)
                     continue
+
+                n_15m = _htf_candles(len(df_5m), config.SECONDARY_TIMEFRAME)
+                df_15m = fetcher.fetch_ohlcv_extended(
+                    symbol, config.SECONDARY_TIMEFRAME, total_candles=n_15m,
+                )
+                n_1h = _htf_candles(len(df_5m), config.TREND_TIMEFRAME)
+                df_1h = fetcher.fetch_ohlcv_extended(
+                    symbol, config.TREND_TIMEFRAME, total_candles=n_1h,
+                )
+                ctx_df = mkt_ctx.fetch_training_context(symbol)
+
+                df_5m = indicators.calculate_all(df_5m)
+                df_15m = indicators.calculate_all(df_15m) if not df_15m.empty else df_15m
+                df_1h = indicators.calculate_all(df_1h) if not df_1h.empty else df_1h
+
+                if not ctx_df.empty:
+                    df_5m = feature_eng.add_context_features(df_5m, ctx_df)
+
+                for col in ("funding_rate", "liq_pressure_enc",
+                            "dist_to_short_liq_pct", "dist_to_long_liq_pct",
+                            "bid_ask_imbalance"):
+                    if col not in df_5m.columns:
+                        df_5m[col] = 0.0
+
+                X, fn = feature_eng.get_feature_matrix_mtf(df_5m, df_15m, df_1h)
                 feat_names = fn
+
+                y = feature_eng.create_labels(
+                    df_5m,
+                    tp_multiplier=config.LABEL_TP_MULTIPLIER,
+                    sl_multiplier=config.LABEL_SL_MULTIPLIER,
+                    max_bars=config.LABEL_MAX_BARS,
+                )
+
+                common = X.index.intersection(y.index)
+                X = X.loc[common].iloc[: -config.LABEL_MAX_BARS]
+                y = y.loc[common].iloc[: -config.LABEL_MAX_BARS]
+
                 all_X.append(X)
                 all_y.append(y)
 
                 n_buy = int((y == 1).sum())
                 n_sell = int((y == -1).sum())
                 n_hold = int((y == 0).sum())
-                Display.show_info(
-                    f"  {sym}: {len(X)} samples | BUY {n_buy} | SELL {n_sell} | HOLD {n_hold}"
+
+                pair_table.add_row(
+                    symbol,
+                    str(len(df_5m)), str(len(df_15m)), str(len(df_1h)),
+                    str(len(ctx_df)) if not ctx_df.empty else "0",
+                    str(len(X)),
+                    str(n_buy), str(n_sell), str(n_hold),
                 )
             except Exception as exc:
-                Display.show_error(f"  {sym}: {exc}")
+                pair_table.add_row(symbol, f"[red]ERR[/red]", "—", "—", "—", "—", "—", "—", "—")
+
+            progress.advance(task)
+
+    console.print(pair_table)
 
     if not all_X:
-        Display.show_error("No training data collected — aborting.")
+        console.print("[bold red]No training data collected — aborting.[/bold red]")
         return
 
     X_all = pd.concat(all_X, ignore_index=True)
     y_all = pd.concat(all_y, ignore_index=True)
 
-    Display.show_info(f"\n{'─' * 50}")
-    Display.show_info(f"Total samples : {len(X_all)}")
-    Display.show_info(f"Features      : {len(X_all.columns)}")
-    Display.show_info(
-        f"  BUY  : {int((y_all == 1).sum()):>6}  "
-        f"({(y_all == 1).mean() * 100:.1f}%)"
-    )
-    Display.show_info(
-        f"  SELL : {int((y_all == -1).sum()):>6}  "
-        f"({(y_all == -1).mean() * 100:.1f}%)"
-    )
-    Display.show_info(
-        f"  HOLD : {int((y_all == 0).sum()):>6}  "
-        f"({(y_all == 0).mean() * 100:.1f}%)"
-    )
+    # ── Step 2: Summary ──────────────────────────────────────
+    console.print(Panel(
+        f"[bold]Step 2/3 — Dataset Summary[/bold]\n\n"
+        f"Total samples: [cyan]{len(X_all):,}[/cyan]\n"
+        f"Features: [cyan]{len(X_all.columns)}[/cyan]\n"
+        f"BUY:  [green]{int((y_all == 1).sum()):>6,}[/green]  "
+        f"({(y_all == 1).mean() * 100:.1f}%)\n"
+        f"SELL: [red]{int((y_all == -1).sum()):>6,}[/red]  "
+        f"({(y_all == -1).mean() * 100:.1f}%)\n"
+        f"HOLD: [yellow]{int((y_all == 0).sum()):>6,}[/yellow]  "
+        f"({(y_all == 0).mean() * 100:.1f}%)",
+        border_style="dim",
+    ))
 
-    # ── balanced sample weights ──────────────────────────────
+    # ── Step 3: Train ensemble ───────────────────────────────
     sw = feature_eng.compute_sample_weights(y_all)
-    Display.show_info("\nClass-balanced sample weights applied.")
 
-    # ── train ────────────────────────────────────────────────
-    Display.show_info("Training Ensemble (XGBoost + LightGBM + CatBoost) …")
-    model = MLSignalModel(config.ML_MODEL_PATH)
-    metrics = model.train(X_all, y_all, feat_names, sample_weights=sw)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Step 3/3 — Training Ensemble …", total=None)
+        model = MLSignalModel(config.ML_MODEL_PATH)
+        metrics = model.train(X_all, y_all, feat_names, sample_weights=sw)
+        progress.update(task, description="Step 3/3 — Training complete!")
 
-    # per-model results
+    # ── Results ──────────────────────────────────────────────
     per_model = metrics.get("per_model", {})
-    for name, m in per_model.items():
-        Display.show_info(
-            f"  {name:<12s} CV: {m['cv_accuracy']:.4f} (±{m['cv_std']:.4f})"
-        )
 
-    Display.show_info(f"\nEnsemble CV : {metrics['cv_accuracy']:.4f} "
-                      f"(±{metrics['cv_std']:.4f})")
-    Display.show_info(
-        f"Fold scores : {[f'{s:.4f}' for s in metrics['scores']]}"
+    results_table = Table(title="Training Results", box=box.ROUNDED)
+    results_table.add_column("Model", style="cyan", width=15)
+    results_table.add_column("CV Accuracy", justify="center", width=14)
+    results_table.add_column("Std", justify="center", width=10)
+
+    for name, m in per_model.items():
+        results_table.add_row(
+            name,
+            f"{m['cv_accuracy']:.4f}",
+            f"±{m['cv_std']:.4f}",
+        )
+    results_table.add_row(
+        "[bold]Ensemble[/bold]",
+        f"[bold]{metrics['cv_accuracy']:.4f}[/bold]",
+        f"[bold]±{metrics['cv_std']:.4f}[/bold]",
     )
 
-    Display.show_info("\nTop-10 feature importances:")
+    console.print(results_table)
+
+    # feature importance
+    console.print("\n[bold]Top-10 Feature Importances:[/bold]")
     for rank, (feat, imp) in enumerate(
         list(model.get_feature_importance().items())[:10], 1
     ):
-        Display.show_info(f"  {rank:>2}. {feat:<30s} {imp:.4f}")
+        bar = "█" * int(imp / 100)
+        console.print(f"  {rank:>2}. {feat:<28s} {bar} {imp:.1f}")
 
-    Display.show_info(f"\nModel saved → {config.ML_MODEL_PATH}")
-    Display.show_info("Done.")
+    console.print(Panel(
+        f"Model saved → [cyan]{config.ML_MODEL_PATH}[/cyan]",
+        border_style="green",
+    ))
 
     return metrics
 
 
 def train_model_and_return_metrics() -> dict:
-    """Entry point for auto_retrain.py — returns metrics dict."""
     return train_model()
 
 
