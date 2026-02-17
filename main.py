@@ -45,6 +45,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# detailed trade log for analysis
+_trade_logger = logging.getLogger("trades")
+_trade_logger.setLevel(logging.INFO)
+_trade_handler = logging.FileHandler("trades.log")
+_trade_handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+_trade_logger.addHandler(_trade_handler)
+_trade_logger.propagate = False  # don't print to console
+
 
 class CryptoScanner:
     """Orchestrates the full scan cycle for all configured pairs."""
@@ -125,6 +133,31 @@ class CryptoScanner:
         if signal.direction != "NEUTRAL" and len(X) > 6:
             signal.age_bars = self._check_signal_age(X, signal.direction)
 
+        # ── detailed logging for analysis ────────────────────
+        _trade_logger.info(
+            "SCAN %s | price=%.6g | atr=%.4f | vol=%.2f | adx=%.1f | ob=%.2f | "
+            "ml=%s(%.1f%%) | llm=%s(%d/10) | combined=%s(%.1f%%) | "
+            "filter=%s | status=%s | age=%d | regime=%s | "
+            "rsi=%.1f | funding=%.6f | ls_ratio=%.2f",
+            symbol, price, atr, volume_ratio, adx, ob_imbalance,
+            {1: "BUY", -1: "SELL", 0: "HOLD"}.get(ml_result.get("signal", 0), "?"),
+            ml_result.get("confidence", 0) * 100,
+            llm_result.get("direction", "?"),
+            llm_result.get("confidence", 0),
+            signal.direction,
+            signal.confidence * 100,
+            getattr(signal, "filter_reason", "") or "PASS",
+            "FRESH" if getattr(signal, "is_new", True) and signal.age_bars == 0
+            else f"NEW_{signal.age_bars * 5}m" if getattr(signal, "is_new", True) and signal.age_bars <= 2
+            else f"LATE_{signal.age_bars * 5}m" if getattr(signal, "is_new", True)
+            else "ACTIVE",
+            signal.age_bars,
+            signal.market_regime,
+            float(last_row.get("rsi", 0)) if pd.notna(last_row.get("rsi")) else 0,
+            ctx.get("funding_rate", 0) if isinstance(ctx.get("funding_rate"), (int, float)) else 0,
+            ctx.get("long_short_ratio", 0),
+        )
+
         # ── 1m entry refinement (only for strong, fresh signals) ──
         threshold = self.signal_gen.config.PREDICTION_THRESHOLD
         if (
@@ -162,7 +195,7 @@ class CryptoScanner:
             and not self.executor.has_position(symbol)
             and self.executor.check_daily_limit()
         ):
-            self.executor.open_trade(
+            opened = self.executor.open_trade(
                 symbol=symbol,
                 direction=signal.direction,
                 entry_price=signal.entry_price,
@@ -171,6 +204,16 @@ class CryptoScanner:
                 leverage=signal.leverage,
                 confidence=signal.confidence,
             )
+            if opened:
+                _trade_logger.info(
+                    "OPEN %s %s | entry=%.6g | sl=%.6g | tp=%.6g | "
+                    "lev=x%d | conf=%.1f%% | mode=%s | reasoning=%s",
+                    signal.direction, symbol,
+                    signal.entry_price, signal.stop_loss, signal.take_profit,
+                    signal.leverage, signal.confidence * 100,
+                    config.TRADING_MODE,
+                    signal.llm_reasoning[:100],
+                )
 
         return signal
 
@@ -318,7 +361,20 @@ class CryptoScanner:
                     state, price + atr_est * 0.3, price - atr_est * 0.3, price,
                 )
                 if should_exit:
-                    self.executor.close_trade(sym, price, reason)
+                    result = self.executor.close_trade(sym, price, reason)
+                    if result:
+                        _trade_logger.info(
+                            "CLOSE %s %s | entry=%.6g | exit=%.6g | "
+                            "reason=%s | pnl=%.2f%% | bars=%d | "
+                            "trail_active=%s | health=%s | %s",
+                            state.direction, sym,
+                            state.entry_price, price,
+                            reason, result.get("pnl_pct", 0),
+                            state.bars_held,
+                            state.trailing_active,
+                            state.health,
+                            state.health_reason,
+                        )
                     del self._open_trades[sym]
 
     # ── main loop ────────────────────────────────────────────
