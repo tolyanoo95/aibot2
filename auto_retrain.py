@@ -116,6 +116,15 @@ def auto_retrain():
     # keep last 50 entries
     save_history(history[-50:])
 
+    # ── restart bot to load new model ────────────────────
+    if new_accuracy >= old_accuracy:
+        try:
+            import subprocess
+            subprocess.run(["systemctl", "restart", "aibot"], timeout=10)
+            logger.info("Bot restarted with new model")
+        except Exception as exc:
+            logger.warning("Could not restart bot: %s (restart manually)", exc)
+
     logger.info("Auto-retrain complete.\n")
 
 
