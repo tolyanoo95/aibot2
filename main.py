@@ -59,6 +59,10 @@ class CryptoScanner:
     """Orchestrates the full scan cycle for all configured pairs."""
 
     def __init__(self):
+        self._archive_logs()
+        for f in ("scanner.log", "trades.log"):
+            if not os.path.exists(f):
+                open(f, "a").close()
         self.fetcher = BinanceDataFetcher(config)
         self.indicators = TechnicalIndicators()
         self.features = FeatureEngineer()
@@ -413,11 +417,6 @@ class CryptoScanner:
                     pass
 
     def run(self, once: bool = False):
-        self._archive_logs()
-        # ensure log files exist for handlers
-        for f in ("scanner.log", "trades.log"):
-            if not os.path.exists(f):
-                open(f, "a").close()
         Display.show_info("Starting AI Crypto Futures Scanner …")
         Display.show_info(f"Pairs: {', '.join(config.TRADING_PAIRS)}")
         Display.show_info(f"Primary TF: {config.PRIMARY_TIMEFRAME}")
