@@ -269,19 +269,13 @@ class Backtester:
         symbol: str,
         total_candles: int = 10000,
     ) -> BacktestResult:
-        console.print(f"\n  [cyan]{symbol}[/cyan]")
-
-        # ── 1. fetch data ────────────────────────────────────
-        console.print(f"    Fetching 5m …", end=" ")
+        # ── 1. fetch data (silent for parallel) ─────────────
         df_5m = self.fetcher.fetch_ohlcv_extended(
             symbol, config.PRIMARY_TIMEFRAME, total_candles=total_candles,
         )
         if df_5m.empty or len(df_5m) < 500:
-            console.print(f"[red]Not enough data[/red]")
             return BacktestResult(symbol=symbol)
-        console.print(f"{len(df_5m)} candles")
 
-        console.print(f"    Fetching 15m + 1h …", end=" ")
         df_15m = self.fetcher.fetch_ohlcv_extended(
             symbol, config.SECONDARY_TIMEFRAME,
             total_candles=max(200, total_candles // 3),
@@ -290,7 +284,6 @@ class Backtester:
             symbol, config.TREND_TIMEFRAME,
             total_candles=max(200, total_candles // 12),
         )
-        console.print("done")
 
         # ── 2. indicators ────────────────────────────────────
         df_5m = self.indicators.calculate_all(df_5m)
@@ -328,26 +321,17 @@ class Backtester:
         test_end = X_test.index[-1]
         df_test = df_5m.loc[test_start:test_end]
 
-        console.print(
-            f"    Train: {len(X_train)} candles | "
-            f"Test: {len(X_test)} candles (OUT-OF-SAMPLE)"
-        )
-
         if len(X_train) < 200 or len(X_test) < 100:
-            console.print(f"    [red]Not enough data for split[/red]")
             return BacktestResult(symbol=symbol)
 
         # ── 6. train model on TRAIN data only ────────────────
-        console.print(f"    Training ensemble (XGB+LGB+CB) …", end=" ")
         sw = self.features.compute_sample_weights(y_train)
         model = _train_ensemble_on_data(X_train, y_train, feat_names, sw)
-        console.print("done")
 
         # ── 7. walk forward on TEST data ─────────────────────
-        console.print(f"    Simulating trades on test data …")
         trades = self._simulate(model, df_test, X_test, symbol)
 
-        console.print(f"    Result: {len(trades)} trades")
+        console.print(f"  [cyan]{symbol}[/cyan]: {len(trades)} trades (train {len(X_train)} / test {len(X_test)})")
 
         return BacktestResult(
             symbol=symbol,
