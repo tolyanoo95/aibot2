@@ -10,9 +10,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _nyse_dead_hours() -> list:
-    """Auto-detect DST and return dead hours around NYSE open (equal coverage year-round).
-    Extra hours can be added via EXTRA_DEAD_HOURS env var (comma-separated UTC hours).
+def _compute_dead_hours() -> list:
+    """Auto-detect DST for NYSE open + custom hours from EXTRA_DEAD_HOURS env var.
     Example: EXTRA_DEAD_HOURS=2,3,4
     """
     from datetime import datetime
@@ -82,7 +81,7 @@ class Config:
     FILTER_MIN_VOLUME_RATIO: float = 0.8    # skip if volume < 80% of avg (dead market)
     FILTER_MIN_ADX: float = 15.0            # skip if ADX < 15 (no trend at all)
     FILTER_DEAD_HOURS: list = field(         # UTC hours to skip new signals + close open trades
-        default_factory=_nyse_dead_hours      # auto-detect DST: 1h before NYSE open + open + 1h after
+        default_factory=_compute_dead_hours    # auto NYSE DST + custom EXTRA_DEAD_HOURS from .env
     )
     FILTER_TREND_EMA: bool = True           # don't LONG when EMA9<EMA21, don't SHORT when EMA9>EMA21
 
