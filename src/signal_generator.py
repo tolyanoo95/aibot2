@@ -97,11 +97,19 @@ class SignalGenerator:
                 direction = "NEUTRAL"
                 confidence *= 0.3
 
-        # SL / TP via ATR
+        # SL / TP via ATR with minimum floor
         sl = tp = 0.0
         if atr > 0 and direction != "NEUTRAL":
             sl_dist = atr * self.config.SL_ATR_MULTIPLIER
             tp_dist = atr * self.config.TP_ATR_MULTIPLIER
+
+            # enforce minimum SL/TP distance (% of price)
+            min_sl = current_price * self.config.MIN_SL_PCT / 100
+            if sl_dist < min_sl:
+                ratio = min_sl / sl_dist if sl_dist > 0 else 1
+                sl_dist = min_sl
+                tp_dist = tp_dist * ratio  # scale TP proportionally
+
             if direction == "LONG":
                 sl = current_price - sl_dist
                 tp = current_price + tp_dist

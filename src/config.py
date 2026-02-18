@@ -42,6 +42,7 @@ class Config:
     # ── Trade parameters (backtest-optimized) ────────────────
     SL_ATR_MULTIPLIER: float = 1.5      # stop-loss = ATR * this (backtest-optimized)
     TP_ATR_MULTIPLIER: float = 2.5      # take-profit = ATR * this  (R:R = 1:1.67)
+    MIN_SL_PCT: float = 0.3             # minimum SL distance in % (floor for low-ATR periods)
     MAX_HOLD_BARS: int = 12             # max holding time in candles (60 min on 5m)
 
     # ── Risk management ──────────────────────────────────────
