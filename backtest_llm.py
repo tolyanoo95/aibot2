@@ -249,12 +249,17 @@ def run_llm_backtest(
                           f"({llm_result.get('confidence', 0)}/10)[/dim]")
 
             # ── combine ──────────────────────────────────────
+            _ema9 = float(row.get("ema_9", 0)) if pd.notna(row.get("ema_9")) else 0
+            _ema21 = float(row.get("ema_21", 0)) if pd.notna(row.get("ema_21")) else 0
+            _ema_trend = (1 if _ema9 > _ema21 else -1) if _ema9 > 0 and _ema21 > 0 else 0
+
             signal = signal_gen.generate(
                 symbol=symbol,
                 ml_result=pred,
                 llm_result=llm_result,
                 current_price=price_close,
                 atr=atr,
+                ema_trend=_ema_trend,
             )
 
             if signal.direction == "NEUTRAL" or signal.confidence < min_confidence:

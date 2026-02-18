@@ -72,6 +72,7 @@ class SignalGenerator:
         volume_ratio: float = 1.0,
         adx: float = 25.0,
         bid_ask_imbalance: float = 0.0,
+        ema_trend: int = 0,  # +1 = bullish (EMA9>EMA21), -1 = bearish, 0 = unknown
     ) -> Signal:
         ml_sig = ml_result.get("signal", 0)
         ml_conf = ml_result.get("confidence", 0.0)
@@ -88,7 +89,7 @@ class SignalGenerator:
         filter_reason = ""
         if direction != "NEUTRAL":
             filter_reason = self._apply_filters(
-                direction, volume_ratio, adx, bid_ask_imbalance,
+                direction, volume_ratio, adx, bid_ask_imbalance, ema_trend,
             )
             if filter_reason:
                 logger.info(
@@ -145,6 +146,7 @@ class SignalGenerator:
         volume_ratio: float,
         adx: float,
         bid_ask_imbalance: float,
+        ema_trend: int = 0,
     ) -> str:
         """
         Return empty string if signal passes all filters,
@@ -160,14 +162,21 @@ class SignalGenerator:
         if min_adx > 0 and adx < min_adx:
             return f"Weak trend (ADX {adx:.1f} < {min_adx})"
 
-        # 3. Time-of-day filter — skip dead hours
+        # 3. Trend EMA filter — don't trade against the short-term trend
+        if self.config.FILTER_TREND_EMA and ema_trend != 0:
+            if direction == "LONG" and ema_trend < 0:
+                return "LONG against bearish EMA trend (EMA9 < EMA21)"
+            if direction == "SHORT" and ema_trend > 0:
+                return "SHORT against bullish EMA trend (EMA9 > EMA21)"
+
+        # 4. Time-of-day filter — skip dead hours
         dead_hours = self.config.FILTER_DEAD_HOURS
         if dead_hours:
             current_hour = datetime.now(timezone.utc).hour
             if current_hour in dead_hours:
                 return f"Dead hour (UTC {current_hour}:00)"
 
-        # 4. Order book filter — don't trade against strong book pressure
+        # 5. Order book filter — don't trade against strong book pressure
         if abs(bid_ask_imbalance) > 0.5:
             if direction == "LONG" and bid_ask_imbalance < -0.5:
                 return f"Orderbook against LONG (imbalance {bid_ask_imbalance:+.2f})"

@@ -65,6 +65,7 @@ class Config:
     FILTER_DEAD_HOURS: list = field(         # UTC hours with low volume → skip signals
         default_factory=lambda: []           # e.g. [2,3,4,5] for 2-5 AM UTC
     )
+    FILTER_TREND_EMA: bool = True           # don't LONG when EMA9<EMA21, don't SHORT when EMA9>EMA21
 
     # ── 1m Entry Refinement ─────────────────────────────────
     USE_1M_ENTRY: bool = True           # enable 1m entry refinement

@@ -126,6 +126,10 @@ class CryptoScanner:
         adx = float(last_row.get("ADX_14", 25.0)) if pd.notna(last_row.get("ADX_14")) else 25.0
         ob_imbalance = ctx.get("bid_ask_imbalance", 0)
 
+        ema9 = float(last_row.get("ema_9", 0)) if pd.notna(last_row.get("ema_9")) else 0
+        ema21 = float(last_row.get("ema_21", 0)) if pd.notna(last_row.get("ema_21")) else 0
+        ema_trend = (1 if ema9 > ema21 else -1) if ema9 > 0 and ema21 > 0 else 0
+
         signal = self.signal_gen.generate(
             symbol=symbol,
             ml_result=ml_result,
@@ -135,6 +139,7 @@ class CryptoScanner:
             volume_ratio=volume_ratio,
             adx=adx,
             bid_ask_imbalance=ob_imbalance,
+            ema_trend=ema_trend,
         )
 
         # store candle data for accurate paper trading

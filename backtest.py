@@ -388,6 +388,12 @@ class Backtester:
                 sl_dist = sig["atr"] * self.sl_atr_mult
                 tp_dist = sig["atr"] * self.tp_atr_mult
 
+                min_sl = entry * config.MIN_SL_PCT / 100
+                if sl_dist < min_sl:
+                    ratio = min_sl / sl_dist if sl_dist > 0 else 1
+                    sl_dist = min_sl
+                    tp_dist = tp_dist * ratio
+
                 if sig["direction"] == "LONG":
                     sl = entry - sl_dist
                     tp = entry + tp_dist
@@ -498,6 +504,14 @@ class Backtester:
                         continue
                     if _cfg.FILTER_MIN_ADX > 0 and adx_val < _cfg.FILTER_MIN_ADX:
                         continue
+                    if _cfg.FILTER_TREND_EMA:
+                        _ema9 = float(row["ema_9"]) if pd.notna(row.get("ema_9")) else 0
+                        _ema21 = float(row["ema_21"]) if pd.notna(row.get("ema_21")) else 0
+                        if _ema9 > 0 and _ema21 > 0:
+                            if direction == "LONG" and _ema9 < _ema21:
+                                continue
+                            if direction == "SHORT" and _ema9 > _ema21:
+                                continue
 
                 # queue signal — will be executed at NEXT candle's open
                 pending_signal = {
