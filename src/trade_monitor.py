@@ -27,6 +27,7 @@ class TradeState:
     trailing_active: bool = False
     health: str = "HEALTHY"  # HEALTHY / WEAKENING / CLOSE_EARLY
     health_reason: str = ""
+    worst_rsi: float = 50.0  # most extreme RSI during trade (lowest for SHORT, highest for LONG)
 
 
 class TradeMonitor:
@@ -61,10 +62,16 @@ class TradeMonitor:
         else:
             state.best_price = min(state.best_price, low)
 
-        # ── 2. Trailing stop ─────────────────────────────────
+        # ── 2. Track extreme RSI for divergence detection ───
+        if state.direction == "SHORT":
+            state.worst_rsi = min(state.worst_rsi, rsi)
+        else:
+            state.worst_rsi = max(state.worst_rsi, rsi)
+
+        # ── 3. Trailing stop ─────────────────────────────────
         state = self._update_trailing(state, atr)
 
-        # ── 3. Trade health ──────────────────────────────────
+        # ── 4. Trade health ──────────────────────────────────
         state = self._check_health(
             state, close, rsi, adx, volume_ratio, ml_signal, ml_confidence,
             funding_rate, ls_ratio,
@@ -148,6 +155,16 @@ class TradeMonitor:
             issues.append(f"Funding positive ({funding_rate:.4f}) → squeeze risk")
             critical = True
 
+        # ── RSI divergence (momentum reversal) ────────────────
+        if state.bars_held >= 3:
+            rsi_recovery = rsi - state.worst_rsi
+            if state.direction == "SHORT" and rsi_recovery > 15 and close <= state.entry_price:
+                issues.append(f"RSI divergence (recovered +{rsi_recovery:.0f} from {state.worst_rsi:.0f})")
+                critical = True
+            elif state.direction == "LONG" and rsi_recovery < -15 and close >= state.entry_price:
+                issues.append(f"RSI divergence (dropped {rsi_recovery:.0f} from {state.worst_rsi:.0f})")
+                critical = True
+
         # ── L/S ratio squeeze risk ───────────────────────────
         if state.direction == "SHORT" and ls_ratio < 0.8:
             issues.append(f"L/S low ({ls_ratio:.2f}) → crowd short, squeeze risk")
@@ -217,7 +234,8 @@ class TradeMonitor:
         tp: float,
     ) -> TradeState:
         """Create initial trade state."""
-        best = entry_price  # will be updated on first bar
+        best = entry_price
+        worst_rsi = 100.0 if direction == "SHORT" else 0.0
         return TradeState(
             symbol=symbol,
             direction=direction,
@@ -226,4 +244,5 @@ class TradeMonitor:
             original_tp=tp,
             current_sl=sl,
             best_price=best,
+            worst_rsi=worst_rsi,
         )
