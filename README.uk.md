@@ -110,7 +110,7 @@ RSI, MACD (лінія + гістограма), Bollinger Bands (%B), EMA (9/21/5
 | **ADX** | Блокує якщо ADX < 15 (немає тренду) | 15 |
 | **EMA Тренд** | Блокує LONG при EMA9 < EMA21 (ведмежий), SHORT при EMA9 > EMA21 (бичачий) | ON |
 | **Order Book** | Блокує проти сильного тиску стакану (>0.5 дисбаланс) | 0.5 |
-| **NYSE Protection** | Закриває угоди + блокує нові сигнали під час відкриття NYSE (13:00–15:00 UTC) | `[13, 14]` |
+| **NYSE Protection** | Закриває угоди + блокує нові сигнали під час відкриття NYSE (авто-DST) | Авто `[13,14,15]` / `[12,13,14]` |
 
 ### 1m Entry Refinement
 Після 5m сигналу бот перевіряє 1m свічки для кращого входу:
@@ -297,7 +297,8 @@ ssh root@ВАШ_СЕРВЕР "cd /root/aibot && bash deploy.sh"
 | `FILTER_MIN_VOLUME_RATIO` | `0.8` | Поріг фільтру об'єму |
 | `FILTER_MIN_ADX` | `15.0` | Поріг фільтру ADX |
 | `FILTER_TREND_EMA` | `True` | Блокувати сигнали проти тренду EMA9/EMA21 |
-| `FILTER_DEAD_HOURS` | `[13, 14]` | Блокувати сигнали + закривати угоди під час NYSE open (години UTC) |
+| `FILTER_DEAD_HOURS` | Авто (DST) | NYSE open ± 1г, автоматично підлаштовується під зиму/літо |
+| `EXTRA_DEAD_HOURS` | `""` | Додаткові UTC години через `.env` (напр. `2,3,4`) |
 | `TRAILING_ACTIVATION_ATR` | `2.0` | Активувати trailing після 2.0x ATR профіту |
 | `TRAILING_DISTANCE_ATR` | `1.5` | Trailing SL на відстані 1.5x ATR за найкращою ціною |
 | `TRADING_MODE` | `paper` | `paper` = тільки логи, `live` = реальні ордери Binance |

@@ -110,7 +110,7 @@ RSI, MACD (line + histogram), Bollinger Bands (%B), EMAs (9/21/50), ATR, ADX (wi
 | **ADX** | Blocks signals when ADX < 15 (no trend) | 15 |
 | **EMA Trend** | Blocks LONG when EMA9 < EMA21 (bearish), SHORT when EMA9 > EMA21 (bullish) | ON |
 | **Order Book** | Blocks signals against strong book pressure (>0.5 imbalance) | 0.5 |
-| **NYSE Protection** | Blocks new signals + closes open trades during NYSE open (13:00–15:00 UTC) | `[13, 14]` |
+| **NYSE Protection** | Blocks new signals + closes open trades during NYSE open (auto-DST) | Auto `[13,14,15]` / `[12,13,14]` |
 
 ### 1-Minute Entry Refinement
 After a 5m signal fires, the bot checks 1m candles for a better entry:
@@ -297,7 +297,8 @@ All settings in `src/config.py`, overridable via `.env`:
 | `FILTER_MIN_VOLUME_RATIO` | `0.8` | Volume filter threshold |
 | `FILTER_MIN_ADX` | `15.0` | ADX filter threshold |
 | `FILTER_TREND_EMA` | `True` | Block signals against EMA9/EMA21 trend |
-| `FILTER_DEAD_HOURS` | `[13, 14]` | Block signals + close trades during NYSE open (UTC hours) |
+| `FILTER_DEAD_HOURS` | Auto (DST) | NYSE open ± 1h, auto-adjusts for winter/summer |
+| `EXTRA_DEAD_HOURS` | `""` | Additional UTC hours via `.env` (e.g. `2,3,4`) |
 | `TRAILING_ACTIVATION_ATR` | `2.0` | Activate trailing after 2.0x ATR profit |
 | `TRAILING_DISTANCE_ATR` | `1.5` | Trail SL at 1.5x ATR behind best price |
 | `TRADING_MODE` | `paper` | `paper` = log only, `live` = real Binance orders |
