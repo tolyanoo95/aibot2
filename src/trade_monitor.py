@@ -49,6 +49,8 @@ class TradeMonitor:
         volume_ratio: float = 1.0,
         ml_signal: int = 0,
         ml_confidence: float = 0.0,
+        funding_rate: float = 0.0,
+        ls_ratio: float = 1.0,
     ) -> TradeState:
         """Update trade state with new bar data. Returns updated state."""
         state.bars_held += 1
@@ -65,6 +67,7 @@ class TradeMonitor:
         # ── 3. Trade health ──────────────────────────────────
         state = self._check_health(
             state, close, rsi, adx, volume_ratio, ml_signal, ml_confidence,
+            funding_rate, ls_ratio,
         )
 
         return state
@@ -102,6 +105,8 @@ class TradeMonitor:
         volume_ratio: float,
         ml_signal: int,
         ml_confidence: float,
+        funding_rate: float = 0.0,
+        ls_ratio: float = 1.0,
     ) -> TradeState:
         """Analyze trade health and recommend action."""
         issues = []
@@ -123,15 +128,35 @@ class TradeMonitor:
         # ── Volume dying ─────────────────────────────────────
         if volume_ratio < 0.3:
             issues.append(f"Volume dead ({volume_ratio:.2f})")
+            critical = critical or (volume_ratio < 0.15)
 
         # ── RSI extreme against position ─────────────────────
-        if state.direction == "LONG" and rsi > 85:
+        if state.direction == "LONG" and rsi > 80:
             issues.append(f"RSI overbought ({rsi:.0f})")
-        elif state.direction == "SHORT" and rsi < 15:
+            if rsi > 85:
+                critical = True
+        elif state.direction == "SHORT" and rsi < 20:
             issues.append(f"RSI oversold ({rsi:.0f})")
+            if rsi < 15:
+                critical = True
+
+        # ── Funding rate squeeze risk ────────────────────────
+        if state.direction == "SHORT" and funding_rate < -0.03:
+            issues.append(f"Funding negative ({funding_rate:.4f}) → squeeze risk")
+            critical = True
+        elif state.direction == "LONG" and funding_rate > 0.03:
+            issues.append(f"Funding positive ({funding_rate:.4f}) → squeeze risk")
+            critical = True
+
+        # ── L/S ratio squeeze risk ───────────────────────────
+        if state.direction == "SHORT" and ls_ratio < 0.8:
+            issues.append(f"L/S low ({ls_ratio:.2f}) → crowd short, squeeze risk")
+            critical = True
+        elif state.direction == "LONG" and ls_ratio > 2.5:
+            issues.append(f"L/S high ({ls_ratio:.2f}) → crowd long, squeeze risk")
+            critical = True
 
         # ── Determine health status ──────────────────────────
-        # CLOSE_EARLY only on strong ML reversal (critical)
         if critical:
             state.health = "CLOSE_EARLY"
             state.health_reason = " | ".join(issues)

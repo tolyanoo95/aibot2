@@ -147,6 +147,8 @@ class CryptoScanner:
         signal.candle_low = low
         signal.candle_atr = atr
         signal.candle_rsi = rsi
+        signal.funding_rate = float(ctx.get("funding_rate", 0) or 0)
+        signal.ls_ratio = float(ctx.get("long_short_ratio", 1) or 1)
 
         # ── check freshness: how many past bars had same direction ──
         if signal.direction != "NEUTRAL" and len(X) > 6:
@@ -392,6 +394,8 @@ class CryptoScanner:
                     atr=atr,
                     rsi=rsi,
                     adx=float(sig.ml_confidence * 100),  # rough proxy
+                    funding_rate=getattr(sig, "funding_rate", 0),
+                    ls_ratio=getattr(sig, "ls_ratio", 1.0),
                     volume_ratio=1.0,
                     ml_signal=sig.ml_signal,
                     ml_confidence=sig.ml_confidence,

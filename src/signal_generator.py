@@ -50,6 +50,10 @@ class Signal:
     candle_atr: float = 0.0
     candle_rsi: float = 50.0
 
+    # market context for trade health monitoring
+    funding_rate: float = 0.0
+    ls_ratio: float = 1.0
+
 
 class SignalGenerator:
     """Weighted voting of ML + LLM into a final signal."""
