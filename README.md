@@ -136,7 +136,10 @@ Active trade management — works in both live scanner and backtester:
 |---------|-------------|
 | **Trailing Stop** | Moves SL in your favor after price moves 2.0x ATR; trails at 1.5x ATR distance |
 | **Opposite Signal** | Auto-closes trade if ML reverses direction with >65% confidence (only if in profit) |
-| **Health Check** | Monitors RSI, ADX, volume each scan: HEALTHY → WEAKENING → CLOSE_EARLY |
+| **RSI Divergence** | Detects momentum reversal: RSI recovers +15 from extreme while price stays flat → CLOSE_EARLY |
+| **Funding Squeeze** | Closes SHORT if funding < -0.03% (crowd short, squeeze risk) |
+| **L/S Squeeze** | Closes SHORT if L/S ratio < 0.8 (everyone short, squeeze risk) |
+| **Health Check** | Monitors RSI extremes, ADX, volume each scan: HEALTHY → WEAKENING → CLOSE_EARLY |
 | **Auto-Track** | Live scanner auto-opens monitoring when FRESH signal >55% appears |
 
 Live display shows:
