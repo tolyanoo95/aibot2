@@ -403,6 +403,7 @@ class CryptoScanner:
                     state, high, low, price,
                 )
                 if should_exit:
+                    closed_direction = state.direction
                     result = self.executor.close_trade(sym, price, reason)
                     if result:
                         _trade_logger.info(
@@ -418,6 +419,27 @@ class CryptoScanner:
                             state.health_reason,
                         )
                     del self._open_trades[sym]
+
+                    # flip: if closed due to ML reversal, open opposite immediately
+                    if reason == "EARLY_EXIT" and "ML reversed" in state.health_reason:
+                        new_dir = "LONG" if closed_direction == "SHORT" else "SHORT"
+                        if (sig.direction == new_dir
+                                and sig.confidence >= self.signal_gen.config.PREDICTION_THRESHOLD
+                                and self.executor.check_daily_limit()):
+                            opened = self.executor.open_trade(
+                                symbol=sym,
+                                direction=sig.direction,
+                                entry_price=sig.entry_price,
+                                stop_loss=sig.stop_loss,
+                                take_profit=sig.take_profit,
+                                leverage=sig.leverage,
+                                confidence=sig.confidence,
+                            )
+                            if opened:
+                                _trade_logger.info(
+                                    "FLIP %s → %s %s @ %.6g (confidence=%.1f%%)",
+                                    closed_direction, new_dir, sym, price, sig.confidence * 100,
+                                )
 
     # ── main loop ────────────────────────────────────────────
 
