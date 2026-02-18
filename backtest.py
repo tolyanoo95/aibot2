@@ -446,6 +446,8 @@ class Backtester:
                 rsi = float(row["rsi"]) if pd.notna(row.get("rsi")) else 50
                 adx_val = float(row["ADX_14"]) if pd.notna(row.get("ADX_14")) else 25
                 vol_r = float(row["volume_ratio"]) if pd.notna(row.get("volume_ratio")) else 1.0
+                fund_rate = float(row["funding_rate"]) if pd.notna(row.get("funding_rate")) else 0
+                ls_rat = float(row["long_short_ratio"]) if pd.notna(row.get("long_short_ratio")) else 1.0
 
                 ml_sig = 0
                 ml_conf = 0.0
@@ -459,6 +461,7 @@ class Backtester:
                     trade_state, high, low, price_close, atr,
                     rsi=rsi, adx=adx_val, volume_ratio=vol_r,
                     ml_signal=ml_sig, ml_confidence=ml_conf,
+                    funding_rate=fund_rate, ls_ratio=ls_rat,
                 )
 
                 # update trade's SL to trailing SL
