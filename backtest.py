@@ -492,9 +492,26 @@ class Backtester:
                     current_trade.commission_pct = round(comm, 4)
 
                     trades.append(current_trade)
+                    closed_direction = current_trade.direction
                     in_trade = False
                     current_trade = None
+                    trade_state = None
                     bars_since_exit = 0
+
+                    # flip: on ML reversal, queue opposite signal immediately
+                    if reason == "EARLY_EXIT" and ts in X.index:
+                        loc = X.index.get_loc(ts)
+                        flip_pred = _predict_with_ensemble(model, X.iloc[[loc]])
+                        flip_dir = "LONG" if flip_pred["signal"] == 1 else "SHORT"
+                        if (flip_pred["signal"] != 0
+                                and flip_pred["confidence"] >= self.min_confidence
+                                and flip_dir != closed_direction):
+                            pending_signal = {
+                                "direction": flip_dir,
+                                "confidence": flip_pred["confidence"],
+                                "signal_price": price_close,
+                                "atr": atr,
+                            }
                     continue
 
             # ── generate signal (for NEXT candle entry) ──────
