@@ -63,12 +63,14 @@ class TradeExecutor:
         qty = risk_amount / sl_distance
         qty_usdt = qty * entry_price
 
+        # round prices to match exchange tick size
+        decimals = self._price_decimals(entry_price)
         trade_info = {
             "symbol": symbol,
             "direction": direction,
-            "entry_price": entry_price,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
+            "entry_price": round(entry_price, decimals),
+            "stop_loss": round(stop_loss, decimals),
+            "take_profit": round(take_profit, decimals),
             "leverage": leverage,
             "confidence": confidence,
             "quantity": round(qty, 6),
@@ -187,6 +189,15 @@ class TradeExecutor:
             json.dump(self._paper_trades, f, indent=2, default=str)
 
     # ── live trading ─────────────────────────────────────────
+
+    @staticmethod
+    def _price_decimals(price: float) -> int:
+        """Guess appropriate decimal places from price magnitude."""
+        if price >= 10000:    return 2   # BTC: 67141.00
+        if price >= 100:      return 2   # BNB: 615.92
+        if price >= 1:        return 4   # ETH: 1965.25, XRP: 1.4567
+        if price >= 0.01:     return 5   # DOGE: 0.09979
+        return 6                         # very small prices
 
     def _round_price(self, symbol: str, price: float) -> float:
         """Round price to exchange precision for the symbol."""
