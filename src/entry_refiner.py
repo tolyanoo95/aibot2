@@ -157,6 +157,13 @@ class EntryRefiner:
         # TP stays the same (5m based)
         tp_dist = atr_5m * self.config.TP_ATR_MULTIPLIER
 
+        # enforce minimum SL floor
+        min_sl = best_price * self.config.MIN_SL_PCT / 100
+        if sl_dist < min_sl:
+            ratio = min_sl / sl_dist if sl_dist > 0 else 1
+            sl_dist = min_sl
+            tp_dist = tp_dist * ratio
+
         if direction == "LONG":
             sl = best_price - sl_dist
             tp = best_price + tp_dist
@@ -181,6 +188,13 @@ class EntryRefiner:
         """Fallback: enter at current price with standard SL/TP."""
         sl_dist = atr_5m * self.config.SL_ATR_MULTIPLIER
         tp_dist = atr_5m * self.config.TP_ATR_MULTIPLIER
+
+        min_sl = price * self.config.MIN_SL_PCT / 100
+        if sl_dist < min_sl:
+            ratio = min_sl / sl_dist if sl_dist > 0 else 1
+            sl_dist = min_sl
+            tp_dist = tp_dist * ratio
+
         if direction == "LONG":
             sl, tp = price - sl_dist, price + tp_dist
         else:
