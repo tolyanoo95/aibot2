@@ -222,10 +222,6 @@ def run_llm_backtest(
             direction_pre = "LONG" if pred["signal"] == 1 else "SHORT"
 
             from src.config import config as _cfg
-            if _cfg.FILTER_DEAD_HOURS:
-                candle_hour = ts.hour if hasattr(ts, 'hour') else pd.Timestamp(ts).hour
-                if candle_hour in _cfg.FILTER_DEAD_HOURS:
-                    continue
             if _cfg.FILTER_MIN_VOLUME_RATIO > 0 and vol_ratio < _cfg.FILTER_MIN_VOLUME_RATIO:
                 console.print(f"  [dim]Candle {ts} — {direction_pre} filtered: low volume ({vol_ratio:.2f})[/dim]")
                 continue
