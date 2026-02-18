@@ -10,6 +10,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _nyse_dead_hours() -> list:
+    """Auto-detect DST and return dead hours around NYSE open (equal coverage year-round)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    et_now = datetime.now(ZoneInfo("America/New_York"))
+    utc_offset = int(et_now.utcoffset().total_seconds() // 3600)  # -5 winter, -4 summer
+    nyse_open_utc = 9 - utc_offset  # 9:30 ET → 14 UTC (winter) or 13 UTC (summer)
+    return [nyse_open_utc - 1, nyse_open_utc, nyse_open_utc + 1]
+
+
 @dataclass
 class Config:
     # ── Binance ──────────────────────────────────────────────
@@ -63,7 +73,7 @@ class Config:
     FILTER_MIN_VOLUME_RATIO: float = 0.8    # skip if volume < 80% of avg (dead market)
     FILTER_MIN_ADX: float = 15.0            # skip if ADX < 15 (no trend at all)
     FILTER_DEAD_HOURS: list = field(         # UTC hours to skip new signals + close open trades
-        default_factory=lambda: [13, 14, 15] # NYSE open + first hour: 13:00-16:00 UTC
+        default_factory=_nyse_dead_hours      # auto-detect DST: 1h before NYSE open + open + 1h after
     )
     FILTER_TREND_EMA: bool = True           # don't LONG when EMA9<EMA21, don't SHORT when EMA9>EMA21
 
