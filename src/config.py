@@ -11,13 +11,22 @@ load_dotenv()
 
 
 def _nyse_dead_hours() -> list:
-    """Auto-detect DST and return dead hours around NYSE open (equal coverage year-round)."""
+    """Auto-detect DST and return dead hours around NYSE open (equal coverage year-round).
+    Extra hours can be added via EXTRA_DEAD_HOURS env var (comma-separated UTC hours).
+    Example: EXTRA_DEAD_HOURS=2,3,4
+    """
     from datetime import datetime
     from zoneinfo import ZoneInfo
     et_now = datetime.now(ZoneInfo("America/New_York"))
     utc_offset = int(et_now.utcoffset().total_seconds() // 3600)  # -5 winter, -4 summer
     nyse_open_utc = 9 - utc_offset  # 9:30 ET → 14 UTC (winter) or 13 UTC (summer)
-    return [nyse_open_utc - 1, nyse_open_utc, nyse_open_utc + 1]
+    hours = [nyse_open_utc - 1, nyse_open_utc, nyse_open_utc + 1]
+
+    extra = os.getenv("EXTRA_DEAD_HOURS", "")
+    if extra:
+        hours += [int(h.strip()) for h in extra.split(",") if h.strip().isdigit()]
+
+    return sorted(set(hours))
 
 
 @dataclass
