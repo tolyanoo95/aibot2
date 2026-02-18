@@ -132,6 +132,11 @@ def run_llm_backtest(
 
             sl_d = sig["atr"] * sl_mult
             tp_d = sig["atr"] * tp_mult
+
+            min_sl = entry * config.MIN_SL_PCT / 100
+            if sl_d < min_sl:
+                sl_d = min_sl
+
             if sig["direction"] == "LONG":
                 sl, tp = entry - sl_d, entry + tp_d
             else:
