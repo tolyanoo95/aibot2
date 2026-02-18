@@ -174,8 +174,12 @@ class TradeMonitor:
         if state.bars_held >= max_bars:
             return True, "TIMEOUT", close
 
-        # ── Early exit: only on CLOSE_EARLY + trade is in profit ──
-        if state.health == "CLOSE_EARLY" and state.bars_held >= 4:
+        # ── Early exit on CLOSE_EARLY ──────────────────────
+        if state.health == "CLOSE_EARLY" and state.bars_held >= 3:
+            is_ml_reversal = "ML reversed" in state.health_reason
+            if is_ml_reversal:
+                return True, "EARLY_EXIT", close
+            # other reasons (ADX, volume, RSI) — only close in profit
             if state.direction == "LONG" and close > state.entry_price:
                 return True, "EARLY_EXIT", close
             elif state.direction == "SHORT" and close < state.entry_price:
