@@ -415,6 +415,31 @@ class Backtester:
                 )
                 in_trade = True
 
+            # ── close trade if entering dead hours ────────────
+            if in_trade and current_trade is not None and self.use_filters:
+                from src.config import config as _cfg
+                if _cfg.FILTER_DEAD_HOURS:
+                    candle_hour = ts.hour if hasattr(ts, 'hour') else pd.Timestamp(ts).hour
+                    if candle_hour in _cfg.FILTER_DEAD_HOURS:
+                        exit_price = price_close
+                        if current_trade.direction == "LONG":
+                            raw_pnl = (exit_price - current_trade.entry_price) / current_trade.entry_price * 100
+                        else:
+                            raw_pnl = (current_trade.entry_price - exit_price) / current_trade.entry_price * 100
+                        comm = 2 * COMMISSION_PCT if self.use_commission else 0
+                        current_trade.exit_price = exit_price
+                        current_trade.exit_time = ts
+                        current_trade.exit_reason = "DEAD_HOUR"
+                        current_trade.pnl_pct = round(raw_pnl, 4)
+                        current_trade.pnl_net_pct = round(raw_pnl - comm, 4)
+                        current_trade.commission_pct = round(comm, 4)
+                        trades.append(current_trade)
+                        in_trade = False
+                        current_trade = None
+                        trade_state = None
+                        bars_since_exit = 0
+                        continue
+
             # ── check open trade (with trailing + health) ────
             if in_trade and current_trade is not None and trade_state is not None:
                 # get ML signal for health check
@@ -498,6 +523,11 @@ class Backtester:
 
                 if self.use_filters:
                     from src.config import config as _cfg
+                    # dead hours filter
+                    if _cfg.FILTER_DEAD_HOURS:
+                        candle_hour = ts.hour if hasattr(ts, 'hour') else pd.Timestamp(ts).hour
+                        if candle_hour in _cfg.FILTER_DEAD_HOURS:
+                            continue
                     if _cfg.FILTER_MIN_VOLUME_RATIO > 0 and vol_ratio < _cfg.FILTER_MIN_VOLUME_RATIO:
                         continue
                     if _cfg.FILTER_MIN_ADX > 0 and adx_val < _cfg.FILTER_MIN_ADX:

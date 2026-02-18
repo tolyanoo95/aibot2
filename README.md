@@ -185,8 +185,9 @@ Both modes feature:
 - **Trailing stop + early exit** active during backtest (same as live)
 - **Filters included**: volume and ADX filters active during backtest
 - **LLM backtest**: separate script for testing with GPT analysis per trade
-- **Exit reasons**: TP, SL, Trail SL, Early Exit, Timeout
-- **Backtest result**: ~+99% net PnL over ~10 days (out-of-sample, after commissions, Win Rate 66%, Sharpe 16, Max DD 3.8%)
+- **Exit reasons**: TP, SL, Trail SL, Early Exit, Timeout, Dead Hour
+- **Dead hour protection**: closes open trades + blocks new signals during NYSE open (13:00–15:00 UTC)
+- **Backtest result**: ~+95% net PnL over ~10 days (out-of-sample, after commissions, Win Rate 67%, Sharpe 17.4, Profit Factor 1.84)
 
 ### Auto-Retrain
 - `auto_retrain.py` — trains new model on fresh data
