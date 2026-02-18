@@ -62,8 +62,8 @@ class Config:
     # ── Signal Filters ───────────────────────────────────────
     FILTER_MIN_VOLUME_RATIO: float = 0.8    # skip if volume < 80% of avg (dead market)
     FILTER_MIN_ADX: float = 15.0            # skip if ADX < 15 (no trend at all)
-    FILTER_DEAD_HOURS: list = field(         # UTC hours with low volume → skip signals
-        default_factory=lambda: []           # e.g. [2,3,4,5] for 2-5 AM UTC
+    FILTER_DEAD_HOURS: list = field(         # UTC hours to skip new signals
+        default_factory=lambda: [14]         # 14:00-15:00 UTC = NYSE open (high reversal risk)
     )
     FILTER_TREND_EMA: bool = True           # don't LONG when EMA9<EMA21, don't SHORT when EMA9>EMA21
 
