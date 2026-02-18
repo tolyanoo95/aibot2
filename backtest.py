@@ -390,9 +390,7 @@ class Backtester:
 
                 min_sl = entry * config.MIN_SL_PCT / 100
                 if sl_dist < min_sl:
-                    ratio = min_sl / sl_dist if sl_dist > 0 else 1
                     sl_dist = min_sl
-                    tp_dist = tp_dist * ratio
 
                 if sig["direction"] == "LONG":
                     sl = entry - sl_dist

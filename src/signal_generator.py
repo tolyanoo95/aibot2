@@ -104,12 +104,10 @@ class SignalGenerator:
             sl_dist = atr * self.config.SL_ATR_MULTIPLIER
             tp_dist = atr * self.config.TP_ATR_MULTIPLIER
 
-            # enforce minimum SL/TP distance (% of price)
+            # enforce minimum SL distance (TP stays unchanged — keeps it reachable)
             min_sl = current_price * self.config.MIN_SL_PCT / 100
             if sl_dist < min_sl:
-                ratio = min_sl / sl_dist if sl_dist > 0 else 1
                 sl_dist = min_sl
-                tp_dist = tp_dist * ratio  # scale TP proportionally
 
             if direction == "LONG":
                 sl = current_price - sl_dist

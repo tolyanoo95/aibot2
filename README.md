@@ -1,6 +1,6 @@
 # AI Crypto Futures Intraday Scanner
 
-An AI-powered multi-pair scanner for cryptocurrency futures intraday trading on Binance. Combines a trained **XGBoost ML model** with **OpenAI LLM analysis** (hybrid approach) to generate actionable trading signals with entry, stop-loss, and take-profit levels.
+An AI-powered multi-pair scanner for cryptocurrency futures intraday trading on Binance. Combines a trained **ML ensemble (XGBoost + LightGBM + CatBoost)** with **OpenAI LLM analysis** (hybrid approach) to generate actionable trading signals with entry, stop-loss, and take-profit levels.
 
 ## How It Works
 
@@ -108,6 +108,7 @@ RSI, MACD (line + histogram), Bollinger Bands (%B), EMAs (9/21/50), ATR, ADX (wi
 |--------|-------------|---------|
 | **Volume** | Blocks signals when volume < 80% of average | 0.8 |
 | **ADX** | Blocks signals when ADX < 15 (no trend) | 15 |
+| **EMA Trend** | Blocks LONG when EMA9 < EMA21 (bearish), SHORT when EMA9 > EMA21 (bullish) | ON |
 | **Order Book** | Blocks signals against strong book pressure (>0.5 imbalance) | 0.5 |
 | **Time-of-day** | Blocks signals during dead hours (configurable UTC hours) | OFF |
 
@@ -116,7 +117,8 @@ After a 5m signal fires, the bot checks 1m candles for a better entry:
 - **RSI oversold/overbought** on 1m → enter on pullback
 - **EMA-9 touch** on 1m → enter at support/resistance
 - **Bollinger Band touch** on 1m → enter at extreme
-- Tighter SL based on 1m ATR → better R:R ratio
+- SL/TP based on 5m ATR (consistent with signal generator)
+- **Minimum SL floor** — SL never less than 0.3% from entry (prevents noise stop-outs)
 - Falls back to market entry if no pullback found
 
 ### Signal Tracking & Freshness
@@ -149,7 +151,8 @@ Live display shows:
 - ML signal (60% weight) + LLM signal (40% weight) — weighted voting
 - **Agreement bonus** (+20% confidence) when both agree
 - **Disagreement = NEUTRAL** — when ML and LLM contradict, bot stays out
-- ATR-based SL/TP (default R:R = 1:3, backtest-optimized)
+- ATR-based SL/TP (SL = 1.5x ATR, TP = 2.5x ATR → R:R = 1:1.67, backtest-optimized)
+- **Minimum SL floor** of 0.3% — prevents tight stops in low-ATR periods
 - Dynamic leverage based on confidence and risk level
 
 ### Paper & Live Trading
@@ -183,7 +186,7 @@ Both modes feature:
 - **Filters included**: volume and ADX filters active during backtest
 - **LLM backtest**: separate script for testing with GPT analysis per trade
 - **Exit reasons**: TP, SL, Trail SL, Early Exit, Timeout
-- **Backtest result**: +97-167% net PnL over ~10 days (out-of-sample, after commissions)
+- **Backtest result**: ~+99% net PnL over ~10 days (out-of-sample, after commissions, Win Rate 66%, Sharpe 16, Max DD 3.8%)
 
 ### Auto-Retrain
 - `auto_retrain.py` — trains new model on fresh data
@@ -283,14 +286,16 @@ All settings in `src/config.py`, overridable via `.env`:
 | `TRADING_PAIRS` | 10 top pairs | Futures pairs to scan |
 | `PRIMARY_TIMEFRAME` | `5m` | Main signal timeframe |
 | `PREDICTION_THRESHOLD` | `0.55` | Min confidence for signals (backtest-optimized) |
-| `SL_ATR_MULTIPLIER` | `1.0` | Stop-loss = ATR × this |
-| `TP_ATR_MULTIPLIER` | `3.0` | Take-profit = ATR × this (R:R = 1:3) |
+| `SL_ATR_MULTIPLIER` | `1.5` | Stop-loss = ATR × this |
+| `TP_ATR_MULTIPLIER` | `2.5` | Take-profit = ATR × this (R:R = 1:1.67) |
+| `MIN_SL_PCT` | `0.3` | Minimum SL distance in % (floor for low-ATR) |
 | `MAX_HOLD_BARS` | `12` | Max holding time (60 min on 5m) |
 | `SCAN_INTERVAL` | `300` | Seconds between scans |
 | `USE_LLM` | `True` | Enable/disable LLM |
 | `USE_1M_ENTRY` | `True` | Enable 1m entry refinement |
 | `FILTER_MIN_VOLUME_RATIO` | `0.8` | Volume filter threshold |
 | `FILTER_MIN_ADX` | `15.0` | ADX filter threshold |
+| `FILTER_TREND_EMA` | `True` | Block signals against EMA9/EMA21 trend |
 | `TRAILING_ACTIVATION_ATR` | `2.0` | Activate trailing after 2.0x ATR profit |
 | `TRAILING_DISTANCE_ATR` | `1.5` | Trail SL at 1.5x ATR behind best price |
 | `TRADING_MODE` | `paper` | `paper` = log only, `live` = real Binance orders |

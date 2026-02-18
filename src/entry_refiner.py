@@ -149,20 +149,14 @@ class EntryRefiner:
         last_row = df.iloc[-1]
         atr_1m = float(last_row["atr_1m"]) if pd.notna(last_row.get("atr_1m")) else 0
 
-        # SL: use tighter of 1m-based or 5m-based
-        sl_1m = atr_1m * 3 if atr_1m > 0 else atr_5m * self.config.SL_ATR_MULTIPLIER
-        sl_5m = atr_5m * self.config.SL_ATR_MULTIPLIER
-        sl_dist = min(sl_1m, sl_5m)  # tighter SL
-
-        # TP stays the same (5m based)
+        # SL/TP based on 5m ATR only (1m ATR was causing too-tight stops)
+        sl_dist = atr_5m * self.config.SL_ATR_MULTIPLIER
         tp_dist = atr_5m * self.config.TP_ATR_MULTIPLIER
 
-        # enforce minimum SL floor
+        # enforce minimum SL floor (TP stays unchanged — keeps it reachable)
         min_sl = best_price * self.config.MIN_SL_PCT / 100
         if sl_dist < min_sl:
-            ratio = min_sl / sl_dist if sl_dist > 0 else 1
             sl_dist = min_sl
-            tp_dist = tp_dist * ratio
 
         if direction == "LONG":
             sl = best_price - sl_dist
@@ -191,9 +185,7 @@ class EntryRefiner:
 
         min_sl = price * self.config.MIN_SL_PCT / 100
         if sl_dist < min_sl:
-            ratio = min_sl / sl_dist if sl_dist > 0 else 1
             sl_dist = min_sl
-            tp_dist = tp_dist * ratio
 
         if direction == "LONG":
             sl, tp = price - sl_dist, price + tp_dist
