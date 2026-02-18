@@ -203,6 +203,27 @@ class TradeExecutor:
             )
             logger.info("[LIVE] Market order: %s", order)
 
+            # recalculate SL/TP based on actual fill price
+            fill_price = float(order.get("average", 0) or order.get("price", 0))
+            if fill_price > 0 and fill_price != trade_info["entry_price"]:
+                old_entry = trade_info["entry_price"]
+                sl_dist = abs(old_entry - trade_info["stop_loss"])
+                tp_dist = abs(old_entry - trade_info["take_profit"])
+
+                if trade_info["direction"] == "LONG":
+                    trade_info["stop_loss"] = fill_price - sl_dist
+                    trade_info["take_profit"] = fill_price + tp_dist
+                else:
+                    trade_info["stop_loss"] = fill_price + sl_dist
+                    trade_info["take_profit"] = fill_price - tp_dist
+
+                logger.info(
+                    "[LIVE] Recalculated SL/TP: entry %.6g→%.6g, SL=%.6g, TP=%.6g",
+                    old_entry, fill_price,
+                    trade_info["stop_loss"], trade_info["take_profit"],
+                )
+                trade_info["entry_price"] = fill_price
+
             # set SL
             sl_side = "sell" if trade_info["direction"] == "LONG" else "buy"
             self.exchange.create_order(
@@ -221,8 +242,8 @@ class TradeExecutor:
             self._open_positions[symbol] = trade_info
 
             logger.info(
-                "[LIVE] Opened %s %s @ market (qty: %s, SL: %s, TP: %s)",
-                trade_info["direction"], symbol,
+                "[LIVE] Opened %s %s @ %.6g (qty: %s, SL: %.6g, TP: %.6g)",
+                trade_info["direction"], symbol, trade_info["entry_price"],
                 qty, trade_info["stop_loss"], trade_info["take_profit"],
             )
             return True
