@@ -188,11 +188,25 @@ class TradeExecutor:
 
     # ── live trading ─────────────────────────────────────────
 
+    def _round_price(self, symbol: str, price: float) -> float:
+        """Round price to exchange precision for the symbol."""
+        try:
+            return float(self.exchange.price_to_precision(symbol, price))
+        except Exception:
+            return price
+
+    def _round_qty(self, symbol: str, qty: float) -> float:
+        """Round quantity to exchange precision for the symbol."""
+        try:
+            return float(self.exchange.amount_to_precision(symbol, qty))
+        except Exception:
+            return qty
+
     def _live_open(self, trade_info: dict) -> bool:
         try:
             symbol = trade_info["symbol"]
             side = "buy" if trade_info["direction"] == "LONG" else "sell"
-            qty = trade_info["quantity"]
+            qty = self._round_qty(symbol, trade_info["quantity"])
 
             # set leverage
             self.exchange.set_leverage(trade_info["leverage"], symbol)
@@ -224,18 +238,24 @@ class TradeExecutor:
                 )
                 trade_info["entry_price"] = fill_price
 
+            # round prices to exchange precision
+            sl_price = self._round_price(symbol, trade_info["stop_loss"])
+            tp_price = self._round_price(symbol, trade_info["take_profit"])
+            trade_info["stop_loss"] = sl_price
+            trade_info["take_profit"] = tp_price
+
             # set SL
             sl_side = "sell" if trade_info["direction"] == "LONG" else "buy"
             self.exchange.create_order(
                 symbol, "STOP_MARKET", sl_side, qty,
-                params={"stopPrice": trade_info["stop_loss"], "closePosition": True},
+                params={"stopPrice": sl_price, "closePosition": True},
             )
 
             # set TP
             tp_side = sl_side
             self.exchange.create_order(
                 symbol, "TAKE_PROFIT_MARKET", tp_side, qty,
-                params={"stopPrice": trade_info["take_profit"], "closePosition": True},
+                params={"stopPrice": tp_price, "closePosition": True},
             )
 
             trade_info["order_id"] = order.get("id")
