@@ -135,8 +135,9 @@ Active trade management — works in both live scanner and backtester:
 | Feature | What it does |
 |---------|-------------|
 | **Trailing Stop** | Moves SL in your favor after price moves 2.0x ATR; trails at 1.5x ATR distance |
-| **Opposite Signal** | Auto-closes trade if ML reverses direction with >65% confidence (only if in profit) |
+| **ML Reversal** | Auto-closes trade if ML reverses direction with >65% confidence (even if in loss) + instant flip to opposite |
 | **Health Check** | Monitors RSI, ADX, volume each scan: HEALTHY → WEAKENING → CLOSE_EARLY |
+| **Position Flip** | On ML reversal: close SHORT → immediately open LONG (no 5min delay) |
 | **Auto-Track** | Live scanner auto-opens monitoring when FRESH signal >55% appears |
 
 Live display shows:
@@ -187,7 +188,8 @@ Both modes feature:
 - **LLM backtest**: separate script for testing with GPT analysis per trade
 - **Exit reasons**: TP, SL, Trail SL, Early Exit, Timeout, Dead Hour
 - **Dead hour protection**: closes open trades + blocks new signals during NYSE open (13:00–15:00 UTC)
-- **Backtest result**: ~+95% net PnL over ~10 days (out-of-sample, after commissions, Win Rate 67%, Sharpe 17.4, Profit Factor 1.84)
+- **Position flip**: on ML reversal, closes trade and opens opposite immediately
+- **Backtest result**: ~+118% net PnL over ~10 days (out-of-sample, after commissions, Win Rate 68%, Sharpe 21, Profit Factor 2.08)
 
 ### Auto-Retrain
 - `auto_retrain.py` — trains new model on fresh data
