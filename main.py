@@ -352,6 +352,25 @@ class CryptoScanner:
                     pos["stop_loss"], pos["take_profit"],
                 )
 
+        # close all open trades during dead hours (e.g. NYSE open)
+        dead_hours = config.FILTER_DEAD_HOURS
+        if dead_hours:
+            from datetime import datetime, timezone
+            current_hour = datetime.now(timezone.utc).hour
+            if current_hour in dead_hours and self._open_trades:
+                for sym in list(self._open_trades.keys()):
+                    sig_match = next((s for s in signals if s.symbol == sym), None)
+                    price = sig_match.entry_price if sig_match else 0
+                    if price > 0:
+                        result = self.executor.close_trade(sym, price, "DEAD_HOUR")
+                        if result:
+                            _trade_logger.info(
+                                "CLOSE %s (DEAD_HOUR) | pnl=%.2f%%",
+                                sym, result.get("pnl_pct", 0),
+                            )
+                    del self._open_trades[sym]
+                return
+
         for sig in signals:
             sym = sig.symbol
 
