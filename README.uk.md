@@ -181,7 +181,7 @@ RSI, MACD (лінія + гістограма), Bollinger Bands (%B), EMA (9/21/5
 - Плече обмежене впевненістю та оцінкою ризику
 
 ### Бектестинг
-- **Out-of-sample**: навчання на 70%, тест на невидимих 30%
+- **Out-of-sample**: навчання на 50%, тест на невидимих 50% (чесніший тест)
 - **Реалістичне виконання**: вхід по open наступної свічки, комісії (0.08%), проскальзування (0.01%)
 - **Trailing stop + early exit** активні в бектесті (так само як в live)
 - **Всі фільтри включені**: volume, ADX, EMA тренд, dead hours
@@ -246,7 +246,6 @@ cp .env.example .env
 ```env
 BINANCE_API_KEY=ваш_ключ
 BINANCE_SECRET=ваш_секрет
-BINANCE_TESTNET=false
 OPENAI_API_KEY=ваш_openai_ключ
 OPENAI_MODEL=gpt-4o-mini
 ```
@@ -305,7 +304,10 @@ ssh root@ВАШ_СЕРВЕР "cd /root/aibot && bash deploy.sh"
 | `TRAILING_DISTANCE_ATR` | `1.5` | Trailing SL на відстані 1.5x ATR за найкращою ціною |
 | `TRADING_MODE` | `paper` | `paper` = тільки логи, `live` = реальні ордери Binance |
 | `TRADE_BALANCE_USDT` | `100` | Баланс для розміру позиції |
-| `MAX_OPEN_TRADES` | `3` | Макс. одночасних позицій |
+| `MAX_OPEN_TRADES` | `10` | Макс. одночасних позицій |
+| `MAX_SAME_DIRECTION` | `5` | Макс. сделок в одному напрямку (анти-кореляція) |
+| `NO_SAME_DIRECTION_REENTRY` | `false` | Блокувати повторний вхід в той самий напрямок |
+| `USE_LLM` | `true` | Увімкнути/вимкнути LLM (false = тільки ML) |
 | `RISK_PER_TRADE` | `0.01` | 1% ризику на угоду |
 | `MAX_DAILY_LOSS` | `0.03` | 3% ліміт денних збитків |
 

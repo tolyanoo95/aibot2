@@ -181,7 +181,7 @@ Both modes feature:
 - Leverage capped by confidence and risk assessment
 
 ### Backtesting
-- **Out-of-sample**: trains on 70%, tests on unseen 30%
+- **Out-of-sample**: trains on 50%, tests on unseen 50% (fairer test)
 - **Realistic execution**: entry at next candle open, commissions (0.08%), slippage (0.01%)
 - **Trailing stop + early exit** active during backtest (same as live)
 - **Filters included**: volume and ADX filters active during backtest
@@ -246,7 +246,6 @@ Edit `.env`:
 ```env
 BINANCE_API_KEY=your_key
 BINANCE_SECRET=your_secret
-BINANCE_TESTNET=false
 OPENAI_API_KEY=your_openai_key
 OPENAI_MODEL=gpt-4o-mini
 ```
@@ -305,7 +304,10 @@ All settings in `src/config.py`, overridable via `.env`:
 | `TRAILING_DISTANCE_ATR` | `1.5` | Trail SL at 1.5x ATR behind best price |
 | `TRADING_MODE` | `paper` | `paper` = log only, `live` = real Binance orders |
 | `TRADE_BALANCE_USDT` | `100` | Balance for position sizing |
-| `MAX_OPEN_TRADES` | `3` | Max simultaneous positions |
+| `MAX_OPEN_TRADES` | `10` | Max simultaneous positions |
+| `MAX_SAME_DIRECTION` | `5` | Max trades in same direction (anti-correlation) |
+| `NO_SAME_DIRECTION_REENTRY` | `false` | Block re-entry in same direction per pair |
+| `USE_LLM` | `true` | Enable/disable LLM (false = ML only) |
 | `RISK_PER_TRADE` | `0.01` | 1% risk per trade |
 | `MAX_DAILY_LOSS` | `0.03` | 3% daily loss limit |
 
