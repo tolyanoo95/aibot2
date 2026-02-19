@@ -666,7 +666,7 @@ class Backtester:
                 status_dict[symbol] = f"[red]Error: {exc}[/red]"
 
         with Live(_build_table(), console=console, refresh_per_second=4) as live:
-            with ThreadPoolExecutor(max_workers=10) as pool:
+            with ThreadPoolExecutor(max_workers=len(pairs)) as pool:
                 futures = [pool.submit(_run_pair, sym) for sym in pairs]
                 while not all(f.done() for f in futures):
                     live.update(_build_table())
