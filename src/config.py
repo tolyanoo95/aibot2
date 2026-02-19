@@ -55,7 +55,7 @@ class Config:
 
     # ── ML Model ─────────────────────────────────────────────
     ML_MODEL_PATH: str = "models/signal_model.json"
-    PREDICTION_THRESHOLD: float = 0.55  # min confidence for a signal (backtest-optimized)
+    PREDICTION_THRESHOLD: float = 0.70  # min confidence for a signal (only high-quality trades)
 
     # ── Trade parameters (backtest-optimized) ────────────────
     SL_ATR_MULTIPLIER: float = 1.5      # stop-loss = ATR * this (backtest-optimized)
