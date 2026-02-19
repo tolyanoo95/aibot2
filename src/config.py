@@ -43,6 +43,7 @@ class Config:
     TRADING_PAIRS: list = field(default_factory=lambda: [
         "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
         "DOGE/USDT", "ADA/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT",
+        "LTC/USDT",
     ])
 
     # ── Timeframes ───────────────────────────────────────────
