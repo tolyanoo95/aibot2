@@ -152,11 +152,12 @@ class CryptoScanner:
             signal.age_bars = self._check_signal_age(X, signal.direction)
 
         # ── detailed logging for analysis ────────────────────
+        llm_reason = llm_result.get("reasoning", "")
         _trade_logger.info(
             "SCAN %s | price=%.6g | atr=%.4f | vol=%.2f | adx=%.1f | ob=%.2f | "
             "ml=%s(%.1f%%) | llm=%s(%d/10) | combined=%s(%.1f%%) | "
             "filter=%s | status=%s | age=%d | regime=%s | "
-            "rsi=%.1f | funding=%.6f | ls_ratio=%.2f",
+            "rsi=%.1f | funding=%.6f | ls_ratio=%.2f | llm_reason=%s",
             symbol, price, atr, volume_ratio, adx, ob_imbalance,
             {1: "BUY", -1: "SELL", 0: "HOLD"}.get(ml_result.get("signal", 0), "?"),
             ml_result.get("confidence", 0) * 100,
@@ -174,6 +175,7 @@ class CryptoScanner:
             float(last_row.get("rsi", 0)) if pd.notna(last_row.get("rsi")) else 0,
             ctx.get("funding_rate", 0) if isinstance(ctx.get("funding_rate"), (int, float)) else 0,
             ctx.get("long_short_ratio", 0),
+            llm_reason.replace("\n", " ") if llm_reason else "—",
         )
 
         # ── 1m entry refinement (only for strong, fresh signals) ──
