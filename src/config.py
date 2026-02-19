@@ -71,7 +71,7 @@ class Config:
 
     # ── LLM ──────────────────────────────────────────────────
     LLM_ANALYSIS_INTERVAL: int = 15     # minutes between LLM calls per pair
-    USE_LLM: bool = True
+    USE_LLM: bool = os.getenv("USE_LLM", "true").lower() == "true"
 
     # ── Trailing Stop & Trade Monitoring ────────────────────
     TRAILING_ACTIVATION_ATR: float = 2.0  # activate trailing after price moves 2.0x ATR in favor (2/3 of TP)
