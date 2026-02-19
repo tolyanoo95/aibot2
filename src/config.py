@@ -33,7 +33,7 @@ class Config:
     # ── Binance ──────────────────────────────────────────────
     BINANCE_API_KEY: str = os.getenv("BINANCE_API_KEY", "")
     BINANCE_SECRET: str = os.getenv("BINANCE_SECRET", "")
-    BINANCE_TESTNET: bool = os.getenv("BINANCE_TESTNET", "true").lower() == "true"
+    BINANCE_TESTNET: bool = False
 
     # ── OpenAI ───────────────────────────────────────────────
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
