@@ -240,7 +240,7 @@ def _predict_with_ensemble(models: dict, X_row: pd.DataFrame) -> dict:
 class Backtester:
     def __init__(
         self,
-        train_ratio: float = 0.70,
+        train_ratio: float = 0.50,
         min_confidence: float = 0.30,
         sl_atr_mult: float = 1.0,
         tp_atr_mult: float = 2.0,
@@ -808,7 +808,7 @@ def main():
     p = argparse.ArgumentParser(description="Realistic Out-of-Sample Backtest")
     p.add_argument("--pair", type=str, help="Single pair (e.g. BTC/USDT)")
     p.add_argument("--candles", type=int, default=10000, help="Total candles (default 10000)")
-    p.add_argument("--train-ratio", type=float, default=0.70, help="Train portion (default 0.70)")
+    p.add_argument("--train-ratio", type=float, default=0.50, help="Train portion (default 0.50)")
     p.add_argument("--confidence", type=float, default=config.PREDICTION_THRESHOLD, help=f"Min confidence (default {config.PREDICTION_THRESHOLD})")
     p.add_argument("--sl", type=float, default=config.SL_ATR_MULTIPLIER, help=f"SL in ATR (default {config.SL_ATR_MULTIPLIER})")
     p.add_argument("--tp", type=float, default=config.TP_ATR_MULTIPLIER, help=f"TP in ATR (default {config.TP_ATR_MULTIPLIER})")
