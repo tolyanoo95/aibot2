@@ -189,7 +189,7 @@ Both modes feature:
 - **Exit reasons**: TP, SL, Trail SL, Early Exit, Timeout, Dead Hour
 - **Dead hour protection**: closes open trades + blocks new signals during NYSE open (13:00–15:00 UTC)
 - **Position flip**: on ML reversal, closes trade and opens opposite immediately
-- **Backtest result**: ~+109% net PnL over ~10 days (out-of-sample, after commissions, Win Rate 70%, Sharpe 23, Profit Factor 2.23, Max DD 3.5%)
+- **Backtest result**: ~+28% net PnL over ~10 days (out-of-sample, after commissions, Win Rate 77%, Sharpe 50, Profit Factor 5.2, Max DD 0.67%)
 
 ### Auto-Retrain
 - `auto_retrain.py` — trains new model on fresh data
@@ -288,7 +288,7 @@ All settings in `src/config.py`, overridable via `.env`:
 |---------|---------|-------------|
 | `TRADING_PAIRS` | 10 top pairs | Futures pairs to scan |
 | `PRIMARY_TIMEFRAME` | `5m` | Main signal timeframe |
-| `PREDICTION_THRESHOLD` | `0.55` | Min confidence for signals (backtest-optimized) |
+| `PREDICTION_THRESHOLD` | `0.70` | Min confidence for signals (only high-quality trades) |
 | `SL_ATR_MULTIPLIER` | `1.5` | Stop-loss = ATR × this |
 | `TP_ATR_MULTIPLIER` | `2.5` | Take-profit = ATR × this (R:R = 1:1.67) |
 | `MIN_SL_PCT` | `0.3` | Minimum SL distance in % (floor for low-ATR) |

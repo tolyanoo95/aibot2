@@ -189,7 +189,7 @@ RSI, MACD (лінія + гістограма), Bollinger Bands (%B), EMA (9/21/5
 - **Причини виходу**: TP, SL, Trail SL, Early Exit, Timeout, Dead Hour
 - **Dead hour protection**: закриває угоди + блокує нові під час відкриття NYSE (13:00–15:00 UTC)
 - **Position flip**: при ML розвороті закриває угоду і одразу відкриває протилежну
-- **Результат бектесту**: ~+109% net PnL за ~10 днів (out-of-sample, після комісій, Win Rate 70%, Sharpe 23, Profit Factor 2.23, Max DD 3.5%)
+- **Результат бектесту**: ~+28% net PnL за ~10 днів (out-of-sample, після комісій, Win Rate 77%, Sharpe 50, Profit Factor 5.2, Max DD 0.67%)
 
 ### Авто-переобучення
 - `auto_retrain.py` — навчає нову модель на свіжих даних
@@ -288,7 +288,7 @@ ssh root@ВАШ_СЕРВЕР "cd /root/aibot && bash deploy.sh"
 |----------|-----------|------|
 | `TRADING_PAIRS` | 10 топ пар | Ф'ючерсні пари для сканування |
 | `PRIMARY_TIMEFRAME` | `5m` | Основний таймфрейм сигналів |
-| `PREDICTION_THRESHOLD` | `0.55` | Мін. впевненість для сигналу (оптимізовано бектестом) |
+| `PREDICTION_THRESHOLD` | `0.70` | Мін. впевненість для сигналу (тільки якісні сделки) |
 | `SL_ATR_MULTIPLIER` | `1.5` | Стоп-лос = ATR × це |
 | `TP_ATR_MULTIPLIER` | `2.5` | Тейк-профіт = ATR × це (R:R = 1:1.67) |
 | `MIN_SL_PCT` | `0.3` | Мінімальна відстань SL у % (floor для низького ATR) |
