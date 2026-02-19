@@ -79,7 +79,7 @@ class Config:
 
     # ── Signal Filters ───────────────────────────────────────
     FILTER_MIN_VOLUME_RATIO: float = 0.8    # skip if volume < 80% of avg (dead market)
-    FILTER_MIN_ADX: float = 15.0            # skip if ADX < 15 (no trend at all)
+    FILTER_MIN_ADX: float = 20.0            # skip if ADX < 20 (weak/no trend → skip)
     FILTER_DEAD_HOURS: list = field(         # UTC hours to skip new signals + close open trades
         default_factory=_compute_dead_hours    # auto NYSE DST + custom EXTRA_DEAD_HOURS from .env
     )
