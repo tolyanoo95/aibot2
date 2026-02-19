@@ -259,8 +259,8 @@ def run_llm_backtest(
 
             # ── combine ──────────────────────────────────────
             _ema9 = float(row.get("ema_9", 0)) if pd.notna(row.get("ema_9")) else 0
-            _ema21 = float(row.get("ema_21", 0)) if pd.notna(row.get("ema_21")) else 0
-            _ema_trend = (1 if _ema9 > _ema21 else -1) if _ema9 > 0 and _ema21 > 0 else 0
+            _price = float(row["close"])
+            _ema_trend = (1 if _price > _ema9 else -1) if _ema9 > 0 else 0
 
             signal = signal_gen.generate(
                 symbol=symbol,

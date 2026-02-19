@@ -263,6 +263,9 @@ class Backtester:
         self.use_commission = use_commission
         self.slippage_pct = slippage_pct
         self.use_filters = use_filters
+        self._ema_fast_len = 9   # default EMA9/EMA21, can override for testing
+        self._ema_slow_len = 21
+        self._ema_mode = "price_vs_ema"  # "ema_cross" or "price_vs_ema"
 
     def backtest_pair(
         self,
@@ -358,6 +361,12 @@ class Backtester:
         symbol: str,
     ) -> list[Trade]:
         """Walk through test candles and simulate trading."""
+        import pandas_ta as ta
+        if "ema_fast" not in df.columns:
+            df = df.copy()
+            df["ema_fast"] = ta.ema(df["close"], length=self._ema_fast_len)
+            df["ema_slow"] = ta.ema(df["close"], length=self._ema_slow_len)
+
         trades: list[Trade] = []
         in_trade = False
         current_trade: Optional[Trade] = None
@@ -550,13 +559,24 @@ class Backtester:
                     if _cfg.FILTER_MIN_ADX > 0 and adx_val < _cfg.FILTER_MIN_ADX:
                         continue
                     if _cfg.FILTER_TREND_EMA:
-                        _ema9 = float(row["ema_9"]) if pd.notna(row.get("ema_9")) else 0
-                        _ema21 = float(row["ema_21"]) if pd.notna(row.get("ema_21")) else 0
-                        if _ema9 > 0 and _ema21 > 0:
-                            if direction == "LONG" and _ema9 < _ema21:
-                                continue
-                            if direction == "SHORT" and _ema9 > _ema21:
-                                continue
+                        if self._ema_mode == "price_vs_ema":
+                            _ema = float(row.get("ema_9", 0))
+                            if pd.isna(_ema): _ema = 0
+                            if _ema > 0:
+                                if direction == "LONG" and price_close < _ema:
+                                    continue
+                                if direction == "SHORT" and price_close > _ema:
+                                    continue
+                        else:
+                            _ema_fast = float(row.get("ema_fast", row.get("ema_9", 0)))
+                            _ema_slow = float(row.get("ema_slow", row.get("ema_21", 0)))
+                            if pd.isna(_ema_fast): _ema_fast = 0
+                            if pd.isna(_ema_slow): _ema_slow = 0
+                            if _ema_fast > 0 and _ema_slow > 0:
+                                if direction == "LONG" and _ema_fast < _ema_slow:
+                                    continue
+                                if direction == "SHORT" and _ema_fast > _ema_slow:
+                                    continue
 
                 # queue signal — will be executed at NEXT candle's open
                 pending_signal = {

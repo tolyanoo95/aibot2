@@ -83,7 +83,7 @@ class Config:
     FILTER_DEAD_HOURS: list = field(         # UTC hours to skip new signals + close open trades
         default_factory=_compute_dead_hours    # auto NYSE DST + custom EXTRA_DEAD_HOURS from .env
     )
-    FILTER_TREND_EMA: bool = True           # don't LONG when EMA9<EMA21, don't SHORT when EMA9>EMA21
+    FILTER_TREND_EMA: bool = True            # don't trade against EMA trend
 
     # ── 1m Entry Refinement ─────────────────────────────────
     USE_1M_ENTRY: bool = True           # enable 1m entry refinement

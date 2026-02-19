@@ -160,12 +160,12 @@ class SignalGenerator:
         if min_adx > 0 and adx < min_adx:
             return f"Weak trend (ADX {adx:.1f} < {min_adx})"
 
-        # 3. Trend EMA filter — don't trade against the short-term trend
+        # 3. Trend filter — don't trade against price vs EMA9
         if self.config.FILTER_TREND_EMA and ema_trend != 0:
             if direction == "LONG" and ema_trend < 0:
-                return "LONG against bearish EMA trend (EMA9 < EMA21)"
+                return "LONG against bearish trend (price < EMA9)"
             if direction == "SHORT" and ema_trend > 0:
-                return "SHORT against bullish EMA trend (EMA9 > EMA21)"
+                return "SHORT against bullish trend (price > EMA9)"
 
         # 4. Time-of-day filter — skip dead hours
         dead_hours = self.config.FILTER_DEAD_HOURS
