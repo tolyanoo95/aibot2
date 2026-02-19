@@ -107,8 +107,8 @@ RSI, MACD (line + histogram), Bollinger Bands (%B), EMAs (9/21/50), ATR, ADX (wi
 | Filter | What it does | Default |
 |--------|-------------|---------|
 | **Volume** | Blocks signals when volume < 80% of average | 0.8 |
-| **ADX** | Blocks signals when ADX < 15 (no trend) | 15 |
-| **EMA Trend** | Blocks LONG when EMA9 < EMA21 (bearish), SHORT when EMA9 > EMA21 (bullish) | ON |
+| **ADX** | Blocks signals when ADX < 20 (weak/no trend) | 20 |
+| **Price vs EMA9** | Blocks LONG when price < EMA9, SHORT when price > EMA9 (instant reaction) | ON |
 | **Order Book** | Blocks signals against strong book pressure (>0.5 imbalance) | 0.5 |
 | **NYSE Protection** | Blocks new signals + closes open trades during NYSE open (auto-DST) | Auto `[13,14,15]` / `[12,13,14]` |
 
@@ -189,7 +189,7 @@ Both modes feature:
 - **Exit reasons**: TP, SL, Trail SL, Early Exit, Timeout, Dead Hour
 - **Dead hour protection**: closes open trades + blocks new signals during NYSE open (13:00–15:00 UTC)
 - **Position flip**: on ML reversal, closes trade and opens opposite immediately
-- **Backtest result**: ~+118% net PnL over ~10 days (out-of-sample, after commissions, Win Rate 68%, Sharpe 21, Profit Factor 2.08)
+- **Backtest result**: ~+109% net PnL over ~10 days (out-of-sample, after commissions, Win Rate 70%, Sharpe 23, Profit Factor 2.23, Max DD 3.5%)
 
 ### Auto-Retrain
 - `auto_retrain.py` — trains new model on fresh data
@@ -297,8 +297,8 @@ All settings in `src/config.py`, overridable via `.env`:
 | `USE_LLM` | `True` | Enable/disable LLM |
 | `USE_1M_ENTRY` | `True` | Enable 1m entry refinement |
 | `FILTER_MIN_VOLUME_RATIO` | `0.8` | Volume filter threshold |
-| `FILTER_MIN_ADX` | `15.0` | ADX filter threshold |
-| `FILTER_TREND_EMA` | `True` | Block signals against EMA9/EMA21 trend |
+| `FILTER_MIN_ADX` | `20.0` | ADX filter threshold (skip weak/no trend) |
+| `FILTER_TREND_EMA` | `True` | Block signals against price vs EMA9 trend |
 | `FILTER_DEAD_HOURS` | Auto (DST) | NYSE open ± 1h, auto-adjusts for winter/summer |
 | `EXTRA_DEAD_HOURS` | `""` | Additional UTC hours via `.env` (e.g. `2,3,4`) |
 | `TRAILING_ACTIVATION_ATR` | `2.0` | Activate trailing after 2.0x ATR profit |

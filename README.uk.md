@@ -107,8 +107,8 @@ RSI, MACD (лінія + гістограма), Bollinger Bands (%B), EMA (9/21/5
 | Фільтр | Що робить | За замовч. |
 |--------|-----------|-----------|
 | **Volume** | Блокує при об'ємі < 80% від середнього | 0.8 |
-| **ADX** | Блокує якщо ADX < 15 (немає тренду) | 15 |
-| **EMA Тренд** | Блокує LONG при EMA9 < EMA21 (ведмежий), SHORT при EMA9 > EMA21 (бичачий) | ON |
+| **ADX** | Блокує якщо ADX < 20 (слабкий/немає тренду) | 20 |
+| **Price vs EMA9** | Блокує LONG коли ціна < EMA9, SHORT коли ціна > EMA9 (миттєва реакція) | ON |
 | **Order Book** | Блокує проти сильного тиску стакану (>0.5 дисбаланс) | 0.5 |
 | **NYSE Protection** | Закриває угоди + блокує нові сигнали під час відкриття NYSE (авто-DST) | Авто `[13,14,15]` / `[12,13,14]` |
 
@@ -189,7 +189,7 @@ RSI, MACD (лінія + гістограма), Bollinger Bands (%B), EMA (9/21/5
 - **Причини виходу**: TP, SL, Trail SL, Early Exit, Timeout, Dead Hour
 - **Dead hour protection**: закриває угоди + блокує нові під час відкриття NYSE (13:00–15:00 UTC)
 - **Position flip**: при ML розвороті закриває угоду і одразу відкриває протилежну
-- **Результат бектесту**: ~+118% net PnL за ~10 днів (out-of-sample, після комісій, Win Rate 68%, Sharpe 21, Profit Factor 2.08)
+- **Результат бектесту**: ~+109% net PnL за ~10 днів (out-of-sample, після комісій, Win Rate 70%, Sharpe 23, Profit Factor 2.23, Max DD 3.5%)
 
 ### Авто-переобучення
 - `auto_retrain.py` — навчає нову модель на свіжих даних
@@ -297,8 +297,8 @@ ssh root@ВАШ_СЕРВЕР "cd /root/aibot && bash deploy.sh"
 | `USE_LLM` | `True` | Увімкнути/вимкнути LLM |
 | `USE_1M_ENTRY` | `True` | Увімкнути 1m entry refinement |
 | `FILTER_MIN_VOLUME_RATIO` | `0.8` | Поріг фільтру об'єму |
-| `FILTER_MIN_ADX` | `15.0` | Поріг фільтру ADX |
-| `FILTER_TREND_EMA` | `True` | Блокувати сигнали проти тренду EMA9/EMA21 |
+| `FILTER_MIN_ADX` | `20.0` | Поріг фільтру ADX (пропуск слабкого/без тренду) |
+| `FILTER_TREND_EMA` | `True` | Блокувати сигнали проти тренду price vs EMA9 |
 | `FILTER_DEAD_HOURS` | Авто (DST) | NYSE open ± 1г, автоматично підлаштовується під зиму/літо |
 | `EXTRA_DEAD_HOURS` | `""` | Додаткові UTC години через `.env` (напр. `2,3,4`) |
 | `TRAILING_ACTIVATION_ATR` | `2.0` | Активувати trailing після 2.0x ATR профіту |
