@@ -374,6 +374,7 @@ class Backtester:
         monitor = TradeMonitor(config)
         bars_since_exit = self.cooldown_bars
         pending_signal: Optional[dict] = None
+        last_direction: str = ""  # prevent same-direction re-entry
 
         for i in range(len(df)):
             ts = df.index[i]
@@ -443,6 +444,7 @@ class Backtester:
                         current_trade.pnl_net_pct = round(raw_pnl - comm, 4)
                         current_trade.commission_pct = round(comm, 4)
                         trades.append(current_trade)
+                        last_direction = current_trade.direction
                         in_trade = False
                         current_trade = None
                         trade_state = None
@@ -502,6 +504,7 @@ class Backtester:
 
                     trades.append(current_trade)
                     closed_direction = current_trade.direction
+                    last_direction = closed_direction
                     in_trade = False
                     current_trade = None
                     trade_state = None
@@ -521,6 +524,7 @@ class Backtester:
                                 "signal_price": price_close,
                                 "atr": atr,
                             }
+                            last_direction = ""  # allow flip entry
                     continue
 
             # ── generate signal (for NEXT candle entry) ──────
@@ -542,6 +546,10 @@ class Backtester:
                     continue
 
                 direction = "LONG" if signal == 1 else "SHORT"
+
+                # don't re-enter same direction (wait for opposite)
+                if direction == last_direction:
+                    continue
 
                 # ── filters (volume + ADX) ───────────────────
                 vol_ratio = float(row["volume_ratio"]) if pd.notna(row.get("volume_ratio")) else 1.0

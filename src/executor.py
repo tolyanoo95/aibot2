@@ -24,6 +24,7 @@ class TradeExecutor:
         self._open_positions: dict = {}  # symbol → position info
         self._paper_trades: list = []
         self._daily_pnl: float = 0.0
+        self._last_direction: dict = {}  # symbol → last closed direction
 
         if self.mode == "live" and not self.exchange:
             logger.error("Live mode requires exchange instance!")
@@ -52,6 +53,11 @@ class TradeExecutor:
 
         if len(self._open_positions) >= self.config.MAX_OPEN_TRADES:
             logger.warning("Max open trades (%d) reached", self.config.MAX_OPEN_TRADES)
+            return False
+
+        # don't re-enter same direction on same pair (wait for opposite)
+        if self._last_direction.get(symbol) == direction:
+            logger.info("Skip %s %s — same direction as last trade, waiting for opposite", direction, symbol)
             return False
 
         max_same = getattr(self.config, "MAX_SAME_DIRECTION", 10)
@@ -125,6 +131,7 @@ class TradeExecutor:
         else:
             self._live_close(result)
 
+        self._last_direction[symbol] = pos["direction"]
         del self._open_positions[symbol]
         return result
 
