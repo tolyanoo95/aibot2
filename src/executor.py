@@ -54,6 +54,12 @@ class TradeExecutor:
             logger.warning("Max open trades (%d) reached", self.config.MAX_OPEN_TRADES)
             return False
 
+        max_same = getattr(self.config, "MAX_SAME_DIRECTION", 10)
+        same_dir_count = sum(1 for p in self._open_positions.values() if p.get("direction") == direction)
+        if same_dir_count >= max_same:
+            logger.warning("Max same direction (%d %s) reached", max_same, direction)
+            return False
+
         # position size
         balance = self.config.TRADE_BALANCE_USDT
         risk_amount = balance * self.config.RISK_PER_TRADE
