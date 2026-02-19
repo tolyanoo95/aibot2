@@ -56,7 +56,8 @@ class TradeExecutor:
             return False
 
         # don't re-enter same direction on same pair (wait for opposite)
-        if self._last_direction.get(symbol) == direction:
+        no_reentry = os.getenv("NO_SAME_DIRECTION_REENTRY", "true").lower() == "true"
+        if no_reentry and self._last_direction.get(symbol) == direction:
             logger.info("Skip %s %s — same direction as last trade, waiting for opposite", direction, symbol)
             return False
 
