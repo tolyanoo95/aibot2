@@ -157,6 +157,10 @@ class CryptoScanner:
         ml_conf_pct = ml_result.get("confidence", 0) * 100
         ml_only_dir = {1: "LONG", -1: "SHORT", 0: "NEUTRAL"}.get(ml_sig, "NEUTRAL")
         ml_only_would_open = ml_conf_pct >= self.signal_gen.config.PREDICTION_THRESHOLD * 100 and ml_sig != 0
+        llm_dir_raw = llm_result.get("direction", "NEUTRAL")
+        llm_conf_raw = llm_result.get("confidence", 0)
+        llm_would_open = llm_dir_raw in ("LONG", "SHORT") and llm_conf_raw >= 7
+        llm_inverted = {"LONG": "SHORT", "SHORT": "LONG"}.get(llm_dir_raw, "NEUTRAL")
 
         # potential SL/TP for logging
         min_sl_dist = price * config.MIN_SL_PCT / 100
@@ -166,7 +170,7 @@ class CryptoScanner:
         _trade_logger.info(
             "SCAN %s | price=%.6g | atr=%.4f | vol=%.2f | adx=%.1f | ob=%.2f | "
             "ml=%s(%.1f%%) | llm=%s(%d/10) | combined=%s(%.1f%%) | "
-            "ml_only=%s(%s) | pot_sl=%.6g | pot_tp=%.6g | "
+            "ml_only=%s(%s) | llm_only=%s(%s) | llm_inv=%s | pot_sl=%.6g | pot_tp=%.6g | "
             "filter=%s | status=%s | age=%d | regime=%s | "
             "rsi=%.1f | funding=%.6f | ls_ratio=%.2f | llm_reason=%s",
             symbol, price, atr, volume_ratio, adx, ob_imbalance,
@@ -177,6 +181,8 @@ class CryptoScanner:
             signal.direction,
             signal.confidence * 100,
             ml_only_dir, "OPEN" if ml_only_would_open else "SKIP",
+            llm_dir_raw, "OPEN" if llm_would_open else "SKIP",
+            llm_inverted,
             price - sl_dist if ml_only_dir == "LONG" else price + sl_dist,
             price + tp_dist if ml_only_dir == "LONG" else price - tp_dist,
             getattr(signal, "filter_reason", "") or "PASS",
