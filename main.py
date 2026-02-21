@@ -353,7 +353,7 @@ class CryptoScanner:
         ) as progress:
             task = progress.add_task("Scanning …", total=len(config.TRADING_PAIRS))
 
-            with ThreadPoolExecutor(max_workers=len(pairs)) as pool:
+            with ThreadPoolExecutor(max_workers=len(config.TRADING_PAIRS)) as pool:
                 futures = {
                     pool.submit(self.scan_pair, sym): sym
                     for sym in config.TRADING_PAIRS
