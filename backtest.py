@@ -266,6 +266,7 @@ class Backtester:
         self._ema_fast_len = 9   # default EMA9/EMA21, can override for testing
         self._ema_slow_len = 21
         self._ema_mode = "price_vs_ema"  # "ema_cross" or "price_vs_ema"
+        self.invert = False  # invert ML direction + R:R 1:1
 
     def backtest_pair(
         self,
@@ -398,9 +399,14 @@ class Backtester:
                 sl_dist = sig["atr"] * self.sl_atr_mult
                 tp_dist = sig["atr"] * self.tp_atr_mult
 
+                if self.invert:
+                    tp_dist = sl_dist  # R:R 1:1
+
                 min_sl = entry * config.MIN_SL_PCT / 100
                 if sl_dist < min_sl:
                     sl_dist = min_sl
+                    if self.invert:
+                        tp_dist = sl_dist
 
                 if sig["direction"] == "LONG":
                     sl = entry - sl_dist
@@ -546,6 +552,8 @@ class Backtester:
                     continue
 
                 direction = "LONG" if signal == 1 else "SHORT"
+                if self.invert:
+                    direction = "SHORT" if direction == "LONG" else "LONG"
 
                 # don't re-enter same direction (wait for opposite)
                 if direction == last_direction:
@@ -816,6 +824,7 @@ def main():
     p.add_argument("--no-commission", action="store_true", help="Disable commissions")
     p.add_argument("--no-filters", action="store_true", help="Disable volume/ADX filters")
     p.add_argument("--slippage", type=float, default=SLIPPAGE_PCT, help="Slippage %% (default 0.01)")
+    p.add_argument("--invert", action="store_true", help="Invert ML direction + R:R 1:1")
     args = p.parse_args()
 
     bt = Backtester(
@@ -828,6 +837,7 @@ def main():
         slippage_pct=args.slippage,
         use_filters=not args.no_filters,
     )
+    bt.invert = args.invert
     pairs = [args.pair] if args.pair else None
     bt.run(pairs=pairs, total_candles=args.candles)
 
