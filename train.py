@@ -147,7 +147,7 @@ def train_model():
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     with Live(_build_status_table(), console=console, refresh_per_second=4) as live:
-        with ThreadPoolExecutor(max_workers=len(pairs)) as pool:
+        with ThreadPoolExecutor(max_workers=len(config.TRADING_PAIRS)) as pool:
             futures = [pool.submit(_process_pair, sym) for sym in config.TRADING_PAIRS]
             while not all(f.done() for f in futures):
                 live.update(_build_status_table())
