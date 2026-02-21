@@ -161,16 +161,28 @@ class CryptoScanner:
         llm_conf_raw = llm_result.get("confidence", 0)
         llm_would_open = llm_dir_raw in ("LONG", "SHORT") and llm_conf_raw >= 7
         llm_inverted = {"LONG": "SHORT", "SHORT": "LONG"}.get(llm_dir_raw, "NEUTRAL")
+        ml_inverted = {"LONG": "SHORT", "SHORT": "LONG"}.get(ml_only_dir, "NEUTRAL")
 
-        # potential SL/TP for logging
+        # potential SL/TP for logging (for each scenario)
         min_sl_dist = price * config.MIN_SL_PCT / 100
         sl_dist = max(atr * config.SL_ATR_MULTIPLIER, min_sl_dist)
         tp_dist = atr * config.TP_ATR_MULTIPLIER
 
+        def _sl_tp(d):
+            if d == "LONG": return price - sl_dist, price + tp_dist
+            elif d == "SHORT": return price + sl_dist, price - tp_dist
+            return 0, 0
+
+        ml_sl, ml_tp = _sl_tp(ml_only_dir)
+        ml_inv_sl, ml_inv_tp = _sl_tp(ml_inverted)
+        llm_sl, llm_tp = _sl_tp(llm_dir_raw)
+        llm_inv_sl, llm_inv_tp = _sl_tp(llm_inverted)
+
         _trade_logger.info(
             "SCAN %s | price=%.6g | atr=%.4f | vol=%.2f | adx=%.1f | ob=%.2f | "
             "ml=%s(%.1f%%) | llm=%s(%d/10) | combined=%s(%.1f%%) | "
-            "ml_only=%s(%s) | llm_only=%s(%s) | llm_inv=%s | pot_sl=%.6g | pot_tp=%.6g | "
+            "ml_only=%s(%s) sl=%.6g tp=%.6g | ml_inv=%s sl=%.6g tp=%.6g | "
+            "llm_only=%s(%s) sl=%.6g tp=%.6g | llm_inv=%s sl=%.6g tp=%.6g | "
             "filter=%s | status=%s | age=%d | regime=%s | "
             "rsi=%.1f | funding=%.6f | ls_ratio=%.2f | llm_reason=%s",
             symbol, price, atr, volume_ratio, adx, ob_imbalance,
@@ -180,11 +192,10 @@ class CryptoScanner:
             llm_result.get("confidence", 0),
             signal.direction,
             signal.confidence * 100,
-            ml_only_dir, "OPEN" if ml_only_would_open else "SKIP",
-            llm_dir_raw, "OPEN" if llm_would_open else "SKIP",
-            llm_inverted,
-            price - sl_dist if ml_only_dir == "LONG" else price + sl_dist,
-            price + tp_dist if ml_only_dir == "LONG" else price - tp_dist,
+            ml_only_dir, "OPEN" if ml_only_would_open else "SKIP", ml_sl, ml_tp,
+            ml_inverted, ml_inv_sl, ml_inv_tp,
+            llm_dir_raw, "OPEN" if llm_would_open else "SKIP", llm_sl, llm_tp,
+            llm_inverted, llm_inv_sl, llm_inv_tp,
             getattr(signal, "filter_reason", "") or "PASS",
             "FRESH" if getattr(signal, "is_new", True) and signal.age_bars == 0
             else f"NEW_{signal.age_bars * 5}m" if getattr(signal, "is_new", True) and signal.age_bars <= 2
