@@ -173,16 +173,23 @@ class CryptoScanner:
             elif d == "SHORT": return price + sl_dist, price - tp_dist
             return 0, 0
 
+        combined_dir = signal.direction
+        combined_inv = {"LONG": "SHORT", "SHORT": "LONG"}.get(combined_dir, "NEUTRAL")
+        combined_would_open = signal.confidence >= self.signal_gen.config.PREDICTION_THRESHOLD and combined_dir != "NEUTRAL"
+
         ml_sl, ml_tp = _sl_tp(ml_only_dir)
         ml_inv_sl, ml_inv_tp = _sl_tp(ml_inverted)
         llm_sl, llm_tp = _sl_tp(llm_dir_raw)
         llm_inv_sl, llm_inv_tp = _sl_tp(llm_inverted)
+        comb_sl, comb_tp = _sl_tp(combined_dir)
+        comb_inv_sl, comb_inv_tp = _sl_tp(combined_inv)
 
         _trade_logger.info(
             "SCAN %s | price=%.6g | atr=%.4f | vol=%.2f | adx=%.1f | ob=%.2f | "
             "ml=%s(%.1f%%) | llm=%s(%d/10) | combined=%s(%.1f%%) | "
             "ml_only=%s(%s) sl=%.6g tp=%.6g | ml_inv=%s sl=%.6g tp=%.6g | "
             "llm_only=%s(%s) sl=%.6g tp=%.6g | llm_inv=%s sl=%.6g tp=%.6g | "
+            "comb_inv=%s sl=%.6g tp=%.6g | "
             "filter=%s | status=%s | age=%d | regime=%s | "
             "rsi=%.1f | funding=%.6f | ls_ratio=%.2f | llm_reason=%s",
             symbol, price, atr, volume_ratio, adx, ob_imbalance,
@@ -196,6 +203,7 @@ class CryptoScanner:
             ml_inverted, ml_inv_sl, ml_inv_tp,
             llm_dir_raw, "OPEN" if llm_would_open else "SKIP", llm_sl, llm_tp,
             llm_inverted, llm_inv_sl, llm_inv_tp,
+            combined_inv, comb_inv_sl, comb_inv_tp,
             getattr(signal, "filter_reason", "") or "PASS",
             "FRESH" if getattr(signal, "is_new", True) and signal.age_bars == 0
             else f"NEW_{signal.age_bars * 5}m" if getattr(signal, "is_new", True) and signal.age_bars <= 2
