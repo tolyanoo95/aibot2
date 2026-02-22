@@ -194,7 +194,16 @@ class SignalGenerator:
     ) -> tuple[str, float]:
         llm_num = {"LONG": 1, "SHORT": -1}.get(llm_dir, 0)
         llm_norm = llm_conf / 10.0
+        llm_active = llm_num != 0 and llm_conf > 0
 
+        if not llm_active:
+            # ML-only mode: use ML signal directly
+            if ml_sig == 0 or ml_conf < self.config.PREDICTION_THRESHOLD * 0.5:
+                return "NEUTRAL", round(ml_conf, 3)
+            direction = "LONG" if ml_sig > 0 else "SHORT"
+            return direction, round(ml_conf, 3)
+
+        # Hybrid mode: weighted voting of ML + LLM
         score = (
             ml_sig * ml_conf * self.ML_WEIGHT
             + llm_num * llm_norm * self.LLM_WEIGHT
@@ -215,7 +224,7 @@ class SignalGenerator:
             conf = min(conf * 1.2, 1.0)
 
         # disagreement → stay out
-        if ml_sig != 0 and llm_num != 0 and ml_sig != llm_num:
+        if ml_sig != 0 and ml_sig != llm_num:
             direction = "NEUTRAL"
             conf *= 0.5
 
