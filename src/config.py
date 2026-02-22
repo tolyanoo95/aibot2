@@ -59,8 +59,8 @@ class Config:
     PREDICTION_THRESHOLD: float = 0.70  # min confidence for a signal (only high-quality trades)
 
     # ── Trade parameters (backtest-optimized) ────────────────
-    SL_ATR_MULTIPLIER: float = 1.5      # stop-loss = ATR * this (backtest-optimized)
-    TP_ATR_MULTIPLIER: float = 2.5      # take-profit = ATR * this  (R:R = 1:1.67)
+    SL_ATR_MULTIPLIER: float = 2.5      # stop-loss = ATR * this (R:R 1:1 symmetric)
+    TP_ATR_MULTIPLIER: float = 2.5      # take-profit = ATR * this (R:R 1:1 symmetric)
     MIN_SL_PCT: float = 0.3             # minimum SL distance in % (floor for low-ATR periods)
     MAX_HOLD_BARS: int = 12             # max holding time in candles (60 min on 5m)
 
@@ -80,11 +80,11 @@ class Config:
 
     # ── Signal Filters ───────────────────────────────────────
     FILTER_MIN_VOLUME_RATIO: float = 0.0    # disabled — volume filter was blocking too many valid signals
-    FILTER_MIN_ADX: float = 20.0            # skip if ADX < 20 (weak/no trend → skip)
+    FILTER_MIN_ADX: float = 0.0             # disabled — ADX filter was blocking valid signals
     FILTER_DEAD_HOURS: list = field(         # UTC hours to skip new signals + close open trades
         default_factory=_compute_dead_hours    # auto NYSE DST + custom EXTRA_DEAD_HOURS from .env
     )
-    FILTER_TREND_EMA: bool = True            # don't trade against EMA trend
+    FILTER_TREND_EMA: bool = False           # disabled — let ML decide direction
 
     # ── 1m Entry Refinement ─────────────────────────────────
     USE_1M_ENTRY: bool = True           # enable 1m entry refinement
@@ -97,8 +97,8 @@ class Config:
     # "live"  = auto-execute real orders on Binance
     TRADING_MODE: str = os.getenv("TRADING_MODE", "paper")
     TRADE_BALANCE_USDT: float = float(os.getenv("TRADE_BALANCE_USDT", "100"))  # balance for position sizing
-    MAX_OPEN_TRADES: int = int(os.getenv("MAX_OPEN_TRADES", "3"))              # max simultaneous positions
-    MAX_SAME_DIRECTION: int = int(os.getenv("MAX_SAME_DIRECTION", "5"))      # max trades in same direction (anti-correlation)
+    MAX_OPEN_TRADES: int = int(os.getenv("MAX_OPEN_TRADES", "11"))             # allow all pairs to trade simultaneously
+    MAX_SAME_DIRECTION: int = int(os.getenv("MAX_SAME_DIRECTION", "11"))     # allow all same direction
 
     # ── Scanner ──────────────────────────────────────────────
     SCAN_INTERVAL: int = 300            # seconds between scans (5 min)
