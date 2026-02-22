@@ -104,7 +104,7 @@ class Config:
     SCAN_INTERVAL: int = 300            # seconds between scans (5 min)
 
     # ── Training ─────────────────────────────────────────────
-    TRAIN_CANDLES: int = 10_000         # ~35 days of 5m data
+    TRAIN_CANDLES: int = 30_000         # ~104 days of 5m data
     LABEL_TP_MULTIPLIER: float = 1.5    # take-profit = ATR * this
     LABEL_SL_MULTIPLIER: float = 1.5    # stop-loss   = ATR * this  (symmetric!)
     LABEL_MAX_BARS: int = 12            # max holding period in candles

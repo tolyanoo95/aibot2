@@ -18,9 +18,16 @@ from sklearn.metrics import accuracy_score
 
 logger = logging.getLogger(__name__)
 
-# label mapping: original → class
-_LABEL_TO_CLASS = {-1: 0, 0: 1, 1: 2}
-_CLASS_TO_LABEL = {v: k for k, v in _LABEL_TO_CLASS.items()}
+# label mapping: original → class (auto-detected in train())
+_LABEL_TO_CLASS_3 = {-1: 0, 0: 1, 1: 2}
+_CLASS_TO_LABEL_3 = {v: k for k, v in _LABEL_TO_CLASS_3.items()}
+
+_LABEL_TO_CLASS_2 = {-1: 0, 1: 1}
+_CLASS_TO_LABEL_2 = {v: k for k, v in _LABEL_TO_CLASS_2.items()}
+
+# backward compat aliases (default 3-class)
+_LABEL_TO_CLASS = _LABEL_TO_CLASS_3
+_CLASS_TO_LABEL = _CLASS_TO_LABEL_3
 
 
 class MLSignalModel:
@@ -31,6 +38,7 @@ class MLSignalModel:
         self._meta_path = model_path.replace(".json", "_meta.pkl")
         self.models: Dict[str, object] = {}  # name → trained model
         self.feature_names: Optional[List[str]] = None
+        self.n_classes: int = 3
         self.is_trained: bool = False
         self._try_load()
 
@@ -49,53 +57,55 @@ class MLSignalModel:
         # clean data
         mask = ~(X.isna().any(axis=1) | y.isna())
         X_clean = X.loc[mask].copy()
-        y_mapped = y.loc[mask].map(_LABEL_TO_CLASS)
+
+        # auto-detect binary vs 3-class
+        unique_labels = set(y.loc[mask].unique())
+        if unique_labels <= {-1, 1}:
+            self.n_classes = 2
+            label_map = _LABEL_TO_CLASS_2
+            logger.info("Binary mode: BUY vs SELL (2 classes)")
+        else:
+            self.n_classes = 3
+            label_map = _LABEL_TO_CLASS_3
+            logger.info("3-class mode: BUY / SELL / HOLD")
+
+        y_mapped = y.loc[mask].map(label_map)
         sw = sample_weights[mask.values] if sample_weights is not None else None
 
+        nc = self.n_classes
+
         # ── define models ────────────────────────────────────
+        xgb_params = dict(
+            n_estimators=500, max_depth=7, learning_rate=0.03,
+            subsample=0.8, colsample_bytree=0.8,
+            min_child_weight=5, gamma=0.1,
+            reg_alpha=0.1, reg_lambda=1.0,
+            random_state=42, n_jobs=-1, verbosity=0,
+        )
+        lgb_params = dict(
+            n_estimators=500, max_depth=7, learning_rate=0.03,
+            subsample=0.8, colsample_bytree=0.8,
+            min_child_weight=5, reg_alpha=0.1, reg_lambda=1.0,
+            random_state=42, n_jobs=-1, verbose=-1,
+        )
+        cat_params = dict(
+            iterations=500, depth=7, learning_rate=0.03,
+            l2_leaf_reg=1.0, random_seed=42, verbose=0,
+        )
+
+        if nc == 2:
+            xgb_params.update(objective="binary:logistic", eval_metric="logloss")
+            lgb_params.update(objective="binary")
+            cat_params.update(loss_function="Logloss")
+        else:
+            xgb_params.update(objective="multi:softprob", num_class=nc, eval_metric="mlogloss")
+            lgb_params.update(objective="multiclass", num_class=nc)
+            cat_params.update(loss_function="MultiClass", classes_count=nc)
+
         model_configs = {
-            "xgboost": xgb.XGBClassifier(
-                n_estimators=500,
-                max_depth=7,
-                learning_rate=0.03,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                min_child_weight=5,
-                gamma=0.1,
-                reg_alpha=0.1,
-                reg_lambda=1.0,
-                objective="multi:softprob",
-                num_class=3,
-                eval_metric="mlogloss",
-                random_state=42,
-                n_jobs=-1,
-                verbosity=0,
-            ),
-            "lightgbm": lgb.LGBMClassifier(
-                n_estimators=500,
-                max_depth=7,
-                learning_rate=0.03,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                min_child_weight=5,
-                reg_alpha=0.1,
-                reg_lambda=1.0,
-                objective="multiclass",
-                num_class=3,
-                random_state=42,
-                n_jobs=-1,
-                verbose=-1,
-            ),
-            "catboost": CatBoostClassifier(
-                iterations=500,
-                depth=7,
-                learning_rate=0.03,
-                l2_leaf_reg=1.0,
-                random_seed=42,
-                verbose=0,
-                loss_function="MultiClass",
-                classes_count=3,
-            ),
+            "xgboost": xgb.XGBClassifier(**xgb_params),
+            "lightgbm": lgb.LGBMClassifier(**lgb_params),
+            "catboost": CatBoostClassifier(**cat_params),
         }
 
         # ── time-series CV (using XGBoost for scoring) ───────
@@ -176,7 +186,7 @@ class MLSignalModel:
         for name, model in self.models.items():
             try:
                 proba = model.predict_proba(X_last)[0]
-                if len(proba) == 3:
+                if len(proba) == self.n_classes:
                     all_proba.append(proba)
             except Exception as exc:
                 logger.debug("Predict error %s: %s", name, exc)
@@ -184,21 +194,33 @@ class MLSignalModel:
         if not all_proba:
             return empty
 
-        # average probabilities
         avg_proba = np.mean(all_proba, axis=0)
         pred_cls = int(np.argmax(avg_proba))
         confidence = float(avg_proba[pred_cls])
-        signal = _CLASS_TO_LABEL[pred_cls]
 
-        return {
-            "signal": signal,
-            "confidence": confidence,
-            "probabilities": {
-                "sell": float(avg_proba[0]),
-                "hold": float(avg_proba[1]),
-                "buy": float(avg_proba[2]),
-            },
-        }
+        if self.n_classes == 2:
+            cls_map = _CLASS_TO_LABEL_2
+            signal = cls_map[pred_cls]
+            return {
+                "signal": signal,
+                "confidence": confidence,
+                "probabilities": {
+                    "sell": float(avg_proba[0]),
+                    "hold": 0.0,
+                    "buy": float(avg_proba[1]),
+                },
+            }
+        else:
+            signal = _CLASS_TO_LABEL_3[pred_cls]
+            return {
+                "signal": signal,
+                "confidence": confidence,
+                "probabilities": {
+                    "sell": float(avg_proba[0]),
+                    "hold": float(avg_proba[1]),
+                    "buy": float(avg_proba[2]),
+                },
+            }
 
     # ── feature alignment ─────────────────────────────────────
 
@@ -265,6 +287,7 @@ class MLSignalModel:
             "feature_names": self.feature_names,
             "model_paths": paths,
             "model_names": list(self.models.keys()),
+            "n_classes": self.n_classes,
         }, self._meta_path)
 
         # keep backward compatibility — save XGBoost as main model too
@@ -280,6 +303,7 @@ class MLSignalModel:
             try:
                 meta = joblib.load(self._meta_path)
                 self.feature_names = meta.get("feature_names")
+                self.n_classes = meta.get("n_classes", 3)
             except Exception:
                 pass
 

@@ -117,14 +117,20 @@ def train_model():
                 tp_multiplier=config.LABEL_TP_MULTIPLIER,
                 sl_multiplier=config.LABEL_SL_MULTIPLIER,
                 max_bars=config.LABEL_MAX_BARS,
+                binary=True,
             )
             common = X.index.intersection(y.index)
             X = X.loc[common].iloc[: -config.LABEL_MAX_BARS]
             y = y.loc[common].iloc[: -config.LABEL_MAX_BARS]
 
+            # binary mode: filter out any remaining HOLD (label=0)
+            keep = y != 0
+            X = X.loc[keep]
+            y = y.loc[keep]
+
             n_buy = int((y == 1).sum())
             n_sell = int((y == -1).sum())
-            n_hold = int((y == 0).sum())
+            n_hold = 0
 
             with lock:
                 all_X.append(X)
@@ -163,16 +169,20 @@ def train_model():
     feat_names = feat_names_ref[0]
 
     # ── Step 2: Summary ──────────────────────────────────────
+    n_buy = int((y_all == 1).sum())
+    n_sell = int((y_all == -1).sum())
+    n_hold = int((y_all == 0).sum())
     console.print(Panel(
         f"[bold]Step 2/3 — Dataset Summary[/bold]\n\n"
         f"Total samples: [cyan]{len(X_all):,}[/cyan]  |  "
-        f"Features: [cyan]{len(X_all.columns)}[/cyan]\n"
-        f"BUY:  [green]{int((y_all == 1).sum()):>6,}[/green]  "
-        f"({(y_all == 1).mean() * 100:.1f}%)  |  "
-        f"SELL: [red]{int((y_all == -1).sum()):>6,}[/red]  "
-        f"({(y_all == -1).mean() * 100:.1f}%)  |  "
-        f"HOLD: [yellow]{int((y_all == 0).sum()):>6,}[/yellow]  "
-        f"({(y_all == 0).mean() * 100:.1f}%)",
+        f"Features: [cyan]{len(X_all.columns)}[/cyan]  |  "
+        f"Mode: [cyan]{'Binary (BUY/SELL)' if n_hold == 0 else '3-class'}[/cyan]\n"
+        f"BUY:  [green]{n_buy:>6,}[/green]  "
+        f"({n_buy / len(y_all) * 100:.1f}%)  |  "
+        f"SELL: [red]{n_sell:>6,}[/red]  "
+        f"({n_sell / len(y_all) * 100:.1f}%)"
+        + (f"  |  HOLD: [yellow]{n_hold:>6,}[/yellow]  "
+           f"({n_hold / len(y_all) * 100:.1f}%)" if n_hold > 0 else ""),
         border_style="dim",
     ))
 

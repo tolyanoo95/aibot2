@@ -1,6 +1,6 @@
 """
 Feature engineering and triple-barrier labeling for the ML pipeline.
-Supports multi-timeframe feature alignment.
+Supports multi-timeframe feature alignment and rolling HTF features.
 """
 
 from typing import Tuple, List
@@ -33,6 +33,9 @@ class FeatureEngineer:
         "pct_change_1",
         "pct_change_5",
         "pct_change_15",
+        # rate of change (longer windows)
+        "roc_12",
+        "roc_48",
         # candle structure
         "body_size",
         "upper_wick",
@@ -41,7 +44,20 @@ class FeatureEngineer:
         "ema_cross_9_21",
         "ema_cross_21_50",
         "price_vs_ema50",
+        "price_vs_ema100",
+        "price_vs_ema200",
         "rsi_divergence",
+        # acceleration / slope
+        "rsi_slope",
+        "adx_slope",
+        # volume
+        "volume_spike",
+        "atr_pct",
+        # regime detection
+        "regime_adx",
+        "regime_volatility",
+        "regime_bb_width",
+        "regime_range_score",
     ]
 
     # Higher-TF features (added with a prefix like "htf_15m_", "htf_1h_")
@@ -64,11 +80,43 @@ class FeatureEngineer:
         feat["ema_cross_9_21"] = (feat["ema_9"] - feat["ema_21"]) / feat["close"] * 100
         feat["ema_cross_21_50"] = (feat["ema_21"] - feat["ema_50"]) / feat["close"] * 100
 
-        # Price position relative to EMA-50
+        # Price position relative to EMAs
         feat["price_vs_ema50"] = (feat["close"] - feat["ema_50"]) / feat["close"] * 100
+        if "ema_100" in feat.columns:
+            feat["price_vs_ema100"] = (feat["close"] - feat["ema_100"]) / feat["close"] * 100
+        if "ema_200" in feat.columns:
+            feat["price_vs_ema200"] = (feat["close"] - feat["ema_200"]) / feat["close"] * 100
 
         # Simplified RSI divergence
         feat["rsi_divergence"] = feat["rsi"].diff(5) - feat["pct_change_5"] * 100
+
+        # Acceleration / slope (how fast indicators change)
+        feat["rsi_slope"] = feat["rsi"].diff(3)
+        if "ADX_14" in feat.columns:
+            feat["adx_slope"] = feat["ADX_14"].diff(3)
+
+        # Volume spike (binary)
+        feat["volume_spike"] = (feat["volume_ratio"] > 2.0).astype(float)
+
+        # Normalized ATR (comparable across pairs)
+        feat["atr_pct"] = feat["atr"] / feat["close"] * 100
+
+        # ── Regime detection features ────────────────────────
+        if "ADX_14" in feat.columns:
+            feat["regime_adx"] = (feat["ADX_14"] > 25).astype(float)
+
+        feat["regime_volatility"] = feat["atr"].rolling(100).apply(
+            lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False,
+        )
+
+        if "BBU_20_2.0" in feat.columns and "BBL_20_2.0" in feat.columns:
+            bbm = feat.get("BBM_20_2.0", feat["close"])
+            feat["regime_bb_width"] = (feat["BBU_20_2.0"] - feat["BBL_20_2.0"]) / bbm * 100
+
+        feat["regime_range_score"] = (
+            (feat["high"].rolling(24).max() - feat["low"].rolling(24).min())
+            / feat["close"] * 100
+        )
 
         # Ensure BB %B exists
         if "BBP_20_2.0" not in feat.columns:
@@ -108,6 +156,57 @@ class FeatureEngineer:
             merged[col] = merged[col].ffill()
 
         return merged
+
+    # ── rolling HTF (computed from 5m data, no lag) ──────────
+
+    ROLLING_HTF_PERIODS = {"15m": 3, "60m": 12}
+
+    def add_rolling_htf_features(
+        self,
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Compute rolling higher-timeframe indicators directly from 5m data.
+        For each window (3 bars = 15m, 12 bars = 60m), resample OHLCV and
+        compute indicators — updated every 5m bar with zero lag.
+        """
+        import pandas_ta as _ta
+
+        feat = df.copy()
+        close = feat["close"]
+        high = feat["high"]
+        low = feat["low"]
+        volume = feat["volume"]
+
+        for label, window in self.ROLLING_HTF_PERIODS.items():
+            prefix = f"rhtf_{label}"
+
+            rolling_high = high.rolling(window).max()
+            rolling_low = low.rolling(window).min()
+            rolling_close = close  # use latest close
+            rolling_vol = volume.rolling(window).sum()
+
+            rsi_len = max(5, 14 * window // 3)
+            rsi_val = _ta.rsi(close, length=rsi_len)
+            feat[f"{prefix}_rsi"] = rsi_val
+
+            ema_fast = _ta.ema(close, length=9 * window)
+            ema_slow = _ta.ema(close, length=21 * window)
+            if ema_fast is not None and ema_slow is not None:
+                feat[f"{prefix}_ema_cross"] = (ema_fast - ema_slow) / close * 100
+
+            atr_val = _ta.atr(rolling_high, rolling_low, rolling_close, length=14)
+            if atr_val is not None:
+                feat[f"{prefix}_atr_pct"] = atr_val / close * 100
+
+            vol_sma = rolling_vol.rolling(20).mean()
+            feat[f"{prefix}_vol_ratio"] = np.where(vol_sma > 0, rolling_vol / vol_sma, 1.0)
+
+            adx_val = _ta.adx(rolling_high, rolling_low, rolling_close, length=14)
+            if adx_val is not None and "ADX_14" in adx_val.columns:
+                feat[f"{prefix}_adx"] = adx_val["ADX_14"]
+
+        return feat
 
     # Market context features (from OI, L/S, liq zones, orderbook)
     CONTEXT_FEATURES: List[str] = [
@@ -169,9 +268,11 @@ class FeatureEngineer:
         cols = [c for c in self.BASE_FEATURES if c in df.columns]
         # HTF features (any column starting with "htf_")
         htf_cols = sorted([c for c in df.columns if c.startswith("htf_")])
+        # rolling HTF features
+        rhtf_cols = sorted([c for c in df.columns if c.startswith("rhtf_")])
         # context features
         ctx_cols = [c for c in self.CONTEXT_FEATURES if c in df.columns]
-        return cols + htf_cols + ctx_cols
+        return cols + htf_cols + rhtf_cols + ctx_cols
 
     def get_feature_matrix(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         """Return a clean (X, column_names) tuple ready for the model."""
@@ -197,11 +298,15 @@ class FeatureEngineer:
         """
         feat = self.create_features(primary_df)
 
+        # legacy HTF (lagging, kept for backward compat)
         if secondary_df is not None and not secondary_df.empty:
             feat = self.add_htf_features(feat, secondary_df, prefix="htf_15m")
 
         if trend_df is not None and not trend_df.empty:
             feat = self.add_htf_features(feat, trend_df, prefix="htf_1h")
+
+        # rolling HTF (computed from 5m data, no lag)
+        feat = self.add_rolling_htf_features(feat)
 
         available = self.get_feature_columns(feat)
         X = feat[available].copy()
@@ -217,6 +322,7 @@ class FeatureEngineer:
         tp_multiplier: float = 1.5,
         sl_multiplier: float = 1.5,
         max_bars: int = 12,
+        binary: bool = False,
     ) -> pd.Series:
         """
         Triple-barrier labeling for intraday trading.
@@ -224,7 +330,9 @@ class FeatureEngineer:
         For each bar *i* we look forward up to *max_bars* candles:
           - If price hits  entry + ATR * tp_multiplier  first  →  label =  1 (BUY)
           - If price hits  entry − ATR * sl_multiplier  first  →  label = −1 (SELL)
-          - If neither within the window                        →  label =  0 (HOLD)
+          - If neither within the window:
+              binary=False → label = 0 (HOLD)
+              binary=True  → label based on close direction at max_bars
         """
         labels = pd.Series(0, index=df.index, dtype=int)
         close = df["close"].values
@@ -241,6 +349,7 @@ class FeatureEngineer:
             tp_up = close[i] + a * tp_multiplier
             tp_down = close[i] - a * sl_multiplier
 
+            resolved = False
             for j in range(1, max_bars + 1):
                 idx = i + j
                 if idx >= n:
@@ -248,18 +357,27 @@ class FeatureEngineer:
                 hit_up = high[idx] >= tp_up
                 hit_down = low[idx] <= tp_down
                 if hit_up and hit_down:
-                    # both hit in same candle — use close direction
                     if close[idx] > close[i]:
                         labels.iloc[i] = 1
                     else:
                         labels.iloc[i] = -1
+                    resolved = True
                     break
                 if hit_up:
                     labels.iloc[i] = 1
+                    resolved = True
                     break
                 if hit_down:
                     labels.iloc[i] = -1
+                    resolved = True
                     break
+
+            if not resolved and binary:
+                end_idx = min(i + max_bars, n - 1)
+                if close[end_idx] > close[i]:
+                    labels.iloc[i] = 1
+                else:
+                    labels.iloc[i] = -1
 
         return labels
 

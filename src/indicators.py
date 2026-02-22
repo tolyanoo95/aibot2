@@ -22,6 +22,8 @@ class TechnicalIndicators:
         df["ema_9"] = ta.ema(df["close"], length=9)
         df["ema_21"] = ta.ema(df["close"], length=21)
         df["ema_50"] = ta.ema(df["close"], length=50)
+        df["ema_100"] = ta.ema(df["close"], length=100)
+        df["ema_200"] = ta.ema(df["close"], length=200)
 
         # ── Momentum ─────────────────────────────────────────
         df["rsi"] = ta.rsi(df["close"], length=14)
@@ -55,6 +57,10 @@ class TechnicalIndicators:
         df["pct_change_1"] = df["close"].pct_change(1)
         df["pct_change_5"] = df["close"].pct_change(5)
         df["pct_change_15"] = df["close"].pct_change(15)
+
+        # ── Rate of change (longer windows) ──────────────────
+        df["roc_12"] = df["close"].pct_change(12) * 100
+        df["roc_48"] = df["close"].pct_change(48) * 100
 
         # ── Candle anatomy ───────────────────────────────────
         df["body_size"] = abs(df["close"] - df["open"]) / df["open"] * 100
