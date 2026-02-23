@@ -81,6 +81,7 @@ class CryptoScanner:
         self._consecutive_sl: int = 0                # consecutive SL counter (reset on TP)
         self._global_pause: int = 0                  # bars remaining in global pause
         self._pair_sl_cooldown: dict[str, int] = {}  # sym → bars remaining after SL on this pair
+        self._model_mtime: float = self._get_model_mtime()  # for hot-reload
         self._trade_monitor = TradeMonitor(config)
         self.executor = TradeExecutor(
             config,
@@ -357,9 +358,30 @@ class CryptoScanner:
 
     # ── full scan ────────────────────────────────────────────
 
+    def _get_model_mtime(self) -> float:
+        try:
+            return os.path.getmtime(config.ML_MODEL_PATH)
+        except OSError:
+            return 0.0
+
+    def _check_model_reload(self):
+        """Hot-reload ML model if file changed on disk (e.g. by auto_retrain)."""
+        mtime = self._get_model_mtime()
+        if mtime > self._model_mtime:
+            logger.info("Model file changed — reloading …")
+            self.ml_model = MLSignalModel(config.ML_MODEL_PATH)
+            self._model_mtime = mtime
+            if self.ml_model.is_trained:
+                logger.info("Model hot-reloaded successfully")
+            else:
+                logger.error("Model reload failed — keeping old predictions")
+
     def run_scan(self) -> list:
         signals = []
         t0 = time.time()
+
+        # hot-reload model if auto_retrain updated it
+        self._check_model_reload()
 
         # tick down global pause (once per scan cycle, not per pair)
         if self._global_pause > 0:

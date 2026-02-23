@@ -115,7 +115,7 @@ def auto_retrain():
     except Exception as exc:
         logger.error("Training failed: %s", exc)
         _restore_backup(model_path, meta_path, backup_model, backup_meta)
-        _start_bot()
+        _start_bot()  # restart even on failure
         return
 
     new_accuracy = metrics.get("cv_accuracy", 0)
