@@ -267,10 +267,7 @@ class CryptoScanner:
         elif self._consecutive_sl >= 2:
             threshold = max(threshold, threshold + 0.075)
 
-        fresh_enough = (
-            (getattr(signal, "is_new", False) and signal.age_bars <= 2)
-            or symbol not in self._active_signals
-        )
+        fresh_enough = signal.age_bars <= 2
         if (
             signal.direction != "NEUTRAL"
             and signal.confidence >= threshold
