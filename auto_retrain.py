@@ -45,11 +45,43 @@ def save_history(history: list):
 
 
 def get_current_accuracy() -> float:
-    """Read accuracy from the last history entry."""
+    """Read accuracy from the model meta file, falling back to history."""
+    import pickle
+    from src.config import config
+    meta_path = config.ML_MODEL_PATH.replace(".json", "_meta.pkl")
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "rb") as f:
+                meta = pickle.load(f)
+            acc = meta.get("cv_accuracy", 0)
+            if acc > 0:
+                return acc
+        except Exception:
+            pass
     history = load_history()
     if history:
         return history[-1].get("cv_accuracy", 0)
     return 0.0
+
+
+def _stop_bot():
+    """Stop the bot to avoid Binance rate limits during training."""
+    import subprocess
+    try:
+        subprocess.run(["systemctl", "stop", "aibot"], timeout=10)
+        logger.info("Bot stopped before training")
+    except Exception as exc:
+        logger.warning("Could not stop bot: %s", exc)
+
+
+def _start_bot():
+    """Start the bot after training."""
+    import subprocess
+    try:
+        subprocess.run(["systemctl", "start", "aibot"], timeout=10)
+        logger.info("Bot started with new model")
+    except Exception as exc:
+        logger.warning("Could not start bot: %s (start manually)", exc)
 
 
 def auto_retrain():
@@ -73,6 +105,9 @@ def auto_retrain():
         shutil.copy2(meta_path, backup_meta)
     logger.info("Old model backed up")
 
+    # ── stop bot to avoid Binance rate limits ─────────────
+    _stop_bot()
+
     # ── train new model ──────────────────────────────────
     try:
         from train import train_model_and_return_metrics
@@ -80,6 +115,7 @@ def auto_retrain():
     except Exception as exc:
         logger.error("Training failed: %s", exc)
         _restore_backup(model_path, meta_path, backup_model, backup_meta)
+        _start_bot()
         return
 
     new_accuracy = metrics.get("cv_accuracy", 0)
@@ -116,14 +152,8 @@ def auto_retrain():
     # keep last 50 entries
     save_history(history[-50:])
 
-    # ── restart bot to load new model ────────────────────
-    if new_accuracy >= old_accuracy:
-        try:
-            import subprocess
-            subprocess.run(["systemctl", "restart", "aibot"], timeout=10)
-            logger.info("Bot restarted with new model")
-        except Exception as exc:
-            logger.warning("Could not restart bot: %s (restart manually)", exc)
+    # ── start bot with new (or restored) model ──────────
+    _start_bot()
 
     logger.info("Auto-retrain complete.\n")
 
