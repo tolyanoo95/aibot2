@@ -77,6 +77,7 @@ class CryptoScanner:
         self._llm_timestamps: dict[str, float] = {}
         self._active_signals: dict = {}
         self._open_trades: dict = {}
+        self._closed_cooldown: dict[str, int] = {}  # sym → bars remaining before re-entry
         self._trade_monitor = TradeMonitor(config)
         self.executor = TradeExecutor(
             config,
@@ -245,13 +246,23 @@ class CryptoScanner:
         # ── track active signals ─────────────────────────────
         signal = self._track_signal(signal)
 
-        # ── INSTANT execution: only FRESH and NEW signals (not LATE) ──
+        # ── INSTANT execution ──────────────────────────────────
+        # Cooldown: tick down after a trade was closed on this pair
+        if symbol in self._closed_cooldown:
+            self._closed_cooldown[symbol] -= 1
+            if self._closed_cooldown[symbol] <= 0:
+                del self._closed_cooldown[symbol]
+
         threshold = self.signal_gen.config.PREDICTION_THRESHOLD
+        fresh_enough = (
+            (getattr(signal, "is_new", False) and signal.age_bars <= 2)  # brand new signal
+            or symbol not in self._active_signals                        # re-entry after closed trade
+        )
         if (
             signal.direction != "NEUTRAL"
             and signal.confidence >= threshold
-            and getattr(signal, "is_new", False)
-            and signal.age_bars <= 2          # FRESH (0) or NEW (1-2), skip LATE (3+)
+            and fresh_enough
+            and symbol not in self._closed_cooldown   # respect cooldown after close
             and not self.executor.has_position(symbol)
             and self.executor.check_daily_limit()
         ):
@@ -459,6 +470,10 @@ class CryptoScanner:
                             state.health_reason,
                         )
                     del self._open_trades[sym]
+                    # reset signal tracking so bot can re-enter after cooldown
+                    if sym in self._active_signals:
+                        del self._active_signals[sym]
+                    self._closed_cooldown[sym] = 2  # wait 2 bars before re-entry
 
                     # flip: if closed due to ML reversal, open opposite immediately
                     if reason == "EARLY_EXIT" and "ML reversed" in state.health_reason:
