@@ -78,6 +78,9 @@ class CryptoScanner:
         self._active_signals: dict = {}
         self._open_trades: dict = {}
         self._closed_cooldown: dict[str, int] = {}  # sym → bars remaining before re-entry
+        self._consecutive_sl: int = 0                # consecutive SL counter (reset on TP)
+        self._global_pause: int = 0                  # bars remaining in global pause
+        self._pair_sl_cooldown: dict[str, int] = {}  # sym → bars remaining after SL on this pair
         self._trade_monitor = TradeMonitor(config)
         self.executor = TradeExecutor(
             config,
@@ -247,22 +250,34 @@ class CryptoScanner:
         signal = self._track_signal(signal)
 
         # ── INSTANT execution ──────────────────────────────────
-        # Cooldown: tick down after a trade was closed on this pair
+        # Tick down cooldowns
         if symbol in self._closed_cooldown:
             self._closed_cooldown[symbol] -= 1
             if self._closed_cooldown[symbol] <= 0:
                 del self._closed_cooldown[symbol]
+        if symbol in self._pair_sl_cooldown:
+            self._pair_sl_cooldown[symbol] -= 1
+            if self._pair_sl_cooldown[symbol] <= 0:
+                del self._pair_sl_cooldown[symbol]
 
+        # Dynamic threshold: raise after consecutive SL
         threshold = self.signal_gen.config.PREDICTION_THRESHOLD
+        if self._consecutive_sl >= 3:
+            threshold = max(threshold, threshold + 0.15)
+        elif self._consecutive_sl >= 2:
+            threshold = max(threshold, threshold + 0.075)
+
         fresh_enough = (
-            (getattr(signal, "is_new", False) and signal.age_bars <= 2)  # brand new signal
-            or symbol not in self._active_signals                        # re-entry after closed trade
+            (getattr(signal, "is_new", False) and signal.age_bars <= 2)
+            or symbol not in self._active_signals
         )
         if (
             signal.direction != "NEUTRAL"
             and signal.confidence >= threshold
             and fresh_enough
-            and symbol not in self._closed_cooldown   # respect cooldown after close
+            and symbol not in self._closed_cooldown
+            and symbol not in self._pair_sl_cooldown  # per-pair SL cooldown
+            and self._global_pause <= 0               # global consecutive SL pause
             and not self.executor.has_position(symbol)
             and self.executor.check_daily_limit()
         ):
@@ -348,6 +363,10 @@ class CryptoScanner:
     def run_scan(self) -> list:
         signals = []
         t0 = time.time()
+
+        # tick down global pause (once per scan cycle, not per pair)
+        if self._global_pause > 0:
+            self._global_pause -= 1
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
@@ -474,6 +493,20 @@ class CryptoScanner:
                     if sym in self._active_signals:
                         del self._active_signals[sym]
                     self._closed_cooldown[sym] = 2  # wait 2 bars before re-entry
+
+                    # track consecutive SL for reversal protection
+                    pnl_pct = result.get("pnl_pct", 0) if result else 0
+                    if reason in ("STOP_LOSS", "SL") or pnl_pct < -0.2:
+                        self._consecutive_sl += 1
+                        self._pair_sl_cooldown[sym] = 8  # 40 min cooldown on this pair
+                        if self._consecutive_sl >= 3:
+                            self._global_pause = 24  # 2 hour pause on all pairs
+                            _trade_logger.info(
+                                "PAUSE | %d consecutive SL — pausing 30 min",
+                                self._consecutive_sl,
+                            )
+                    else:
+                        self._consecutive_sl = 0  # reset on TP or positive TO
 
                     # flip: if closed due to ML reversal, open opposite immediately
                     if reason == "EARLY_EXIT" and "ML reversed" in state.health_reason:
