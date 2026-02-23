@@ -558,8 +558,10 @@ class CryptoScanner:
             f"ML model: {'loaded' if self.ml_model.is_trained else 'NOT trained — run train.py first'}"
         )
         Display.show_info(f"LLM: {'enabled' if config.USE_LLM else 'disabled'}")
-        Display.show_info("Market context: OI + L/S + Stablecoin Dom + Liq Zones")
-        Display.show_info(f"1m entry refinement: {'ON' if config.USE_1M_ENTRY else 'OFF'}")
+        Display.show_info(f"SL: {config.SL_ATR_MULTIPLIER}x ATR | TP: {config.TP_ATR_MULTIPLIER}x ATR | Max hold: {config.MAX_HOLD_BARS} bars")
+        Display.show_info(f"Threshold: {config.PREDICTION_THRESHOLD*100:.0f}% | Filters: vol={config.FILTER_MIN_VOLUME_RATIO} adx={config.FILTER_MIN_ADX} ema={config.FILTER_TREND_EMA}")
+        Display.show_info(f"Reversal protection: 3 SL → pause 24 bars | pair CD 8 bars | dynamic threshold")
+        Display.show_info(f"Re-entry: enabled (2-bar cooldown after close)")
         mode_color = "green" if config.TRADING_MODE == "paper" else "bold red"
         Display.show_info(
             f"Trading mode: [{mode_color}]{config.TRADING_MODE.upper()}[/{mode_color}]"
