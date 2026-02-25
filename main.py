@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-AI Crypto Futures Intraday Scanner
-───────────────────────────────────
-Scans top crypto futures pairs on Binance and generates hybrid
-ML + LLM trading signals for intraday (scalp / day-trade) setups.
-
-Now with market context: OI, L/S ratio, stablecoin dominance,
-total market cap, and liquidation zone estimation.
+AI Crypto Futures Multi-Model Trading Bot
+──────────────────────────────────────────
+Multi-model regime trading system: Regime Classifier detects market state
+(Trend/Reversal/Range), then applies specialized model for each regime.
 
 Usage:
     python main.py            # run the scanner loop
     python main.py --once     # single scan then exit
 """
+
+VERSION = "2.0.0"
 
 import argparse
 import logging
@@ -646,7 +645,7 @@ class CryptoScanner:
                     pass
 
     def run(self, once: bool = False):
-        Display.show_info("Starting AI Crypto Futures Scanner …")
+        Display.show_info(f"AI Crypto Futures Bot v{VERSION}")
         Display.show_info(f"Pairs: {', '.join(config.TRADING_PAIRS)}")
         Display.show_info(f"Primary TF: {config.PRIMARY_TIMEFRAME}")
         Display.show_info(
