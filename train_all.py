@@ -32,7 +32,7 @@ from src.range_model import RangeModel
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=[logging.FileHandler("train_all.log")],
 )
 logger = logging.getLogger(__name__)
 console = Console()
@@ -198,7 +198,7 @@ def train_all():
         console=console,
     ) as progress:
         task = progress.add_task("Fetching …", total=len(config.TRADING_PAIRS))
-        with ThreadPoolExecutor(max_workers=11) as pool:
+        with ThreadPoolExecutor(max_workers=6) as pool:
             futures = {
                 pool.submit(fetch_pair_data, pair, fetcher, indicators, features): pair
                 for pair in config.TRADING_PAIRS
