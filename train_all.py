@@ -75,33 +75,58 @@ def train_all():
     # ═══════════════════════════════════════════════════════
     console.print("\n[bold cyan]═══ STEP 1: Fetching Data (once for all models) ═══[/bold cyan]")
 
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn, MofNCompleteColumn
+
     pair_data = {}
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {
-            pool.submit(fetch_pair_data, pair, fetcher, indicators, features): pair
-            for pair in config.TRADING_PAIRS
-        }
-        for future in as_completed(futures):
-            pair, data = future.result()
-            if data is not None:
-                pair_data[pair] = data
-                console.print(f"  {pair:<12s} {len(data['X']):>6d} bars ✓")
-            else:
-                console.print(f"  {pair:<12s} [red]SKIP[/red]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=30),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        fetch_task = progress.add_task("Fetching pairs …", total=len(config.TRADING_PAIRS))
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {
+                pool.submit(fetch_pair_data, pair, fetcher, indicators, features): pair
+                for pair in config.TRADING_PAIRS
+            }
+            for future in as_completed(futures):
+                pair, data = future.result()
+                if data is not None:
+                    pair_data[pair] = data
+                    progress.update(fetch_task, advance=1, description=f"Fetched {pair} ({len(data['X'])} bars)")
+                else:
+                    progress.update(fetch_task, advance=1, description=f"[red]{pair} SKIP[/red]")
 
     if not pair_data:
         console.print("[red]No data![/red]")
         return
 
-    console.print(f"\n  Total: {sum(len(d['X']) for d in pair_data.values()):,} bars from {len(pair_data)} pairs")
+    total_bars = sum(len(d['X']) for d in pair_data.values())
+    console.print(f"\n  ✓ Total: {total_bars:,} bars from {len(pair_data)} pairs")
 
     results = {}
+    model_progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=30),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    )
+    model_task = model_progress.add_task("Training models …", total=4)
 
     # ═══════════════════════════════════════════════════════
     # STEP 2: Train all models on shared data
     # ═══════════════════════════════════════════════════════
 
+    model_progress.start()
+
     # ── 2a. Trend Model ────────────────────────────────────
+    model_progress.update(model_task, description="[cyan]Training Trend Model …[/cyan]")
     console.print("\n[bold cyan]═══ 2a/4 TREND MODEL ═══[/bold cyan]")
     try:
         all_X = []
@@ -140,6 +165,8 @@ def train_all():
         results["Trend"] = {"accuracy": 0, "std": 0, "status": f"FAIL: {exc}"}
         console.print(f"  [red]FAILED: {exc}[/red]")
 
+    model_progress.update(model_task, advance=1, description="[cyan]Training Regime Classifier …[/cyan]")
+
     # ── 2b. Regime Classifier ──────────────────────────────
     console.print("\n[bold cyan]═══ 2b/4 REGIME CLASSIFIER ═══[/bold cyan]")
     try:
@@ -166,6 +193,8 @@ def train_all():
     except Exception as exc:
         results["Regime"] = {"accuracy": 0, "std": 0, "status": f"FAIL: {exc}"}
         console.print(f"  [red]FAILED: {exc}[/red]")
+
+    model_progress.update(model_task, advance=1, description="[cyan]Training Reversal Model …[/cyan]")
 
     # ── 2c. Reversal Model ─────────────────────────────────
     console.print("\n[bold cyan]═══ 2c/4 REVERSAL MODEL ═══[/bold cyan]")
@@ -198,6 +227,8 @@ def train_all():
     except Exception as exc:
         results["Reversal"] = {"accuracy": 0, "std": 0, "status": f"FAIL: {exc}"}
         console.print(f"  [red]FAILED: {exc}[/red]")
+
+    model_progress.update(model_task, advance=1, description="[cyan]Training Range Model …[/cyan]")
 
     # ── 2d. Range Model ────────────────────────────────────
     console.print("\n[bold cyan]═══ 2d/4 RANGE MODEL ═══[/bold cyan]")
@@ -237,6 +268,9 @@ def train_all():
     except Exception as exc:
         results["Range"] = {"accuracy": 0, "std": 0, "status": f"FAIL: {exc}"}
         console.print(f"  [red]FAILED: {exc}[/red]")
+
+    model_progress.update(model_task, advance=1, description="[green]All models trained![/green]")
+    model_progress.stop()
 
     # ═══════════════════════════════════════════════════════
     # SUMMARY
