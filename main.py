@@ -88,6 +88,10 @@ class CryptoScanner:
         self._global_pause: int = 0                  # bars remaining in global pause
         self._pair_sl_cooldown: dict[str, int] = {}  # sym → bars remaining after SL on this pair
         self._model_mtime: float = self._get_model_mtime()  # for hot-reload
+        self._btc_regime: str = "UNKNOWN"                    # BTC regime for alt filtering
+        self._btc_confidence: float = 0.0                    # BTC ML confidence
+        self._pair_regimes: dict[str, str] = {}              # sym → last regime (for transitions)
+        self._model_wr: dict[str, list] = {"trend": [], "reversal": [], "range": []}  # per-model WR
         self._trade_monitor = TradeMonitor(config)
         self.executor = TradeExecutor(
             config,
@@ -133,6 +137,24 @@ class CryptoScanner:
         # Fallback: if regime uncertain, use Trend Model
         if regime_conf < 0.60:
             regime = "TREND"
+
+        # Track BTC regime for alt filtering
+        if "BTC" in symbol:
+            self._btc_regime = regime
+            self._btc_confidence = regime_conf
+
+        # BTC leader: skip alts if BTC is uncertain
+        if "BTC" not in symbol and self._btc_confidence < 0.60:
+            regime = "TREND"  # safe fallback for alts
+
+        # Regime transition: close early if regime changed on open trade
+        prev_regime = self._pair_regimes.get(symbol)
+        if prev_regime and prev_regime != regime and self.executor.has_position(symbol):
+            _trade_logger.info(
+                "REGIME_CHANGE %s | %s → %s | may close early",
+                symbol, prev_regime, regime,
+            )
+        self._pair_regimes[symbol] = regime
 
         # ── Model selection based on regime ────────────────────
         if regime == "REVERSAL" and self.reversal_model.is_trained:
@@ -568,6 +590,18 @@ class CryptoScanner:
                             )
                     else:
                         self._consecutive_sl = 0  # reset on TP or positive TO
+
+                    # per-model WR tracking
+                    regime_used = self._pair_regimes.get(sym, "trend").lower()
+                    if regime_used in self._model_wr:
+                        self._model_wr[regime_used].append(1 if pnl_pct > 0 else 0)
+                        recent = self._model_wr[regime_used][-20:]
+                        wr = sum(recent) / len(recent) * 100 if recent else 0
+                        if len(recent) >= 10 and wr < 40:
+                            _trade_logger.info(
+                                "MODEL_WARN | %s WR=%.0f%% (last %d) — consider disabling",
+                                regime_used.upper(), wr, len(recent),
+                            )
 
                     # flip: if closed due to ML reversal, open opposite immediately
                     if reason == "EARLY_EXIT" and "ML reversed" in state.health_reason:

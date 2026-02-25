@@ -24,6 +24,8 @@ class TradeExecutor:
         self._open_positions: dict = {}  # symbol → position info
         self._paper_trades: list = []
         self._daily_pnl: float = 0.0
+        self._daily_peak_pnl: float = 0.0
+        self._drawdown_active: bool = False
         self._last_direction: dict = {}  # symbol → last closed direction
 
         if self.mode == "live" and not self.exchange:
@@ -67,9 +69,17 @@ class TradeExecutor:
             logger.warning("Max same direction (%d %s) reached", max_same, direction)
             return False
 
-        # position size
+        # position size (scaled by confidence + drawdown protection)
         balance = self.config.TRADE_BALANCE_USDT
-        risk_amount = balance * self.config.RISK_PER_TRADE
+        if confidence >= 0.90:
+            size_mult = 1.5
+        elif confidence >= 0.80:
+            size_mult = 1.0
+        else:
+            size_mult = 0.5
+        if self._drawdown_active:
+            size_mult *= 0.5  # halve size during drawdown
+        risk_amount = balance * self.config.RISK_PER_TRADE * size_mult
         sl_distance = abs(entry_price - stop_loss)
         if sl_distance == 0:
             return False
@@ -126,6 +136,13 @@ class TradeExecutor:
         result["status"] = "CLOSED"
 
         self._daily_pnl += pnl_pct
+        if self._daily_pnl > self._daily_peak_pnl:
+            self._daily_peak_pnl = self._daily_pnl
+        drawdown = self._daily_peak_pnl - self._daily_pnl
+        if drawdown >= 3.0:
+            self._drawdown_active = True
+            logger.warning("DRAWDOWN: peak %.2f%% → now %.2f%% (DD=%.2f%%) — reducing size",
+                           self._daily_peak_pnl, self._daily_pnl, drawdown)
 
         if self.mode == "paper":
             self._paper_close(result)
