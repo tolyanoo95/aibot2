@@ -29,6 +29,9 @@ from src.indicators import TechnicalIndicators
 from src.llm_analyzer import LLMAnalyzer
 from src.market_context import MarketContext
 from src.ml_model import MLSignalModel
+from src.regime_classifier import RegimeClassifier
+from src.reversal_model import ReversalModel
+from src.range_model import RangeModel
 from src.entry_refiner import EntryRefiner
 from src.executor import TradeExecutor
 from src.risk_manager import RiskManager
@@ -67,6 +70,9 @@ class CryptoScanner:
         self.indicators = TechnicalIndicators()
         self.features = FeatureEngineer()
         self.ml_model = MLSignalModel(config.ML_MODEL_PATH)
+        self.regime_clf = RegimeClassifier("models/regime_model.pkl")
+        self.reversal_model = ReversalModel("models/reversal_model.pkl")
+        self.range_model = RangeModel("models/range_model.pkl")
         self.llm = LLMAnalyzer(config) if config.USE_LLM else None
         self.market_ctx = MarketContext(config)
         self.signal_gen = SignalGenerator(config)
@@ -115,7 +121,26 @@ class CryptoScanner:
         X, feat_names = self.features.get_feature_matrix_mtf(
             primary_with_ctx, data["secondary"], data["trend"],
         )
-        ml_result = self.ml_model.predict(X)
+
+        # ── Regime detection ───────────────────────────────────
+        regime_result = {"regime": "TREND", "confidence": 0.5}
+        if self.regime_clf.is_trained:
+            regime_result = self.regime_clf.predict(X)
+
+        regime = regime_result["regime"]
+        regime_conf = regime_result["confidence"]
+
+        # Fallback: if regime uncertain, use Trend Model
+        if regime_conf < 0.60:
+            regime = "TREND"
+
+        # ── Model selection based on regime ────────────────────
+        if regime == "REVERSAL" and self.reversal_model.is_trained:
+            ml_result = self.reversal_model.predict(X)
+        elif regime == "RANGE" and self.range_model.is_trained:
+            ml_result = self.range_model.predict(X)
+        else:
+            ml_result = self.ml_model.predict(X)
 
         # ── LLM analysis (rate-limited, with full context) ───
         llm_result = self._get_llm(symbol, data, ctx)
@@ -134,6 +159,20 @@ class CryptoScanner:
         ema9 = float(last_row.get("ema_9", 0)) if pd.notna(last_row.get("ema_9")) else 0
         ema_trend = (1 if price > ema9 else -1) if ema9 > 0 else 0
 
+        # ── Dynamic SL/TP based on regime ──────────────────────
+        if regime == "RANGE":
+            self.signal_gen.config.SL_ATR_MULTIPLIER = 1.0
+            self.signal_gen.config.TP_ATR_MULTIPLIER = 1.0
+            self.signal_gen.config.MAX_HOLD_BARS = 6
+        elif regime == "REVERSAL":
+            self.signal_gen.config.SL_ATR_MULTIPLIER = 1.5
+            self.signal_gen.config.TP_ATR_MULTIPLIER = 1.5
+            self.signal_gen.config.MAX_HOLD_BARS = 12
+        else:
+            self.signal_gen.config.SL_ATR_MULTIPLIER = 2.5
+            self.signal_gen.config.TP_ATR_MULTIPLIER = 2.5
+            self.signal_gen.config.MAX_HOLD_BARS = 12
+
         signal = self.signal_gen.generate(
             symbol=symbol,
             ml_result=ml_result,
@@ -145,6 +184,9 @@ class CryptoScanner:
             bid_ask_imbalance=ob_imbalance,
             ema_trend=ema_trend,
         )
+
+        # stamp regime on signal for logging
+        signal.market_regime = regime
 
         # store candle data for accurate paper trading
         signal.candle_high = high
@@ -574,13 +616,14 @@ class CryptoScanner:
         Display.show_info(f"Pairs: {', '.join(config.TRADING_PAIRS)}")
         Display.show_info(f"Primary TF: {config.PRIMARY_TIMEFRAME}")
         Display.show_info(
-            f"ML model: {'loaded' if self.ml_model.is_trained else 'NOT trained — run train.py first'}"
+            f"ML Trend: {'loaded' if self.ml_model.is_trained else 'NOT trained'}"
+            f" | Regime: {'loaded' if self.regime_clf.is_trained else 'NOT trained'}"
+            f" | Reversal: {'loaded' if self.reversal_model.is_trained else 'NOT trained'}"
+            f" | Range: {'loaded' if self.range_model.is_trained else 'NOT trained'}"
         )
         Display.show_info(f"LLM: {'enabled' if config.USE_LLM else 'disabled'}")
-        Display.show_info(f"SL: {config.SL_ATR_MULTIPLIER}x ATR | TP: {config.TP_ATR_MULTIPLIER}x ATR | Max hold: {config.MAX_HOLD_BARS} bars")
-        Display.show_info(f"Threshold: {config.PREDICTION_THRESHOLD*100:.0f}% | Filters: vol={config.FILTER_MIN_VOLUME_RATIO} adx={config.FILTER_MIN_ADX} ema={config.FILTER_TREND_EMA}")
-        Display.show_info(f"Reversal protection: 3 SL → pause 24 bars | pair CD 8 bars | dynamic threshold")
-        Display.show_info(f"Re-entry: enabled (2-bar cooldown after close)")
+        Display.show_info(f"Multi-model: Regime → Trend(2.5x) / Reversal(1.5x) / Range(1.0x) ATR")
+        Display.show_info(f"Threshold: {config.PREDICTION_THRESHOLD*100:.0f}% | Fallback: Trend Model if regime uncertain")
         mode_color = "green" if config.TRADING_MODE == "paper" else "bold red"
         Display.show_info(
             f"Trading mode: [{mode_color}]{config.TRADING_MODE.upper()}[/{mode_color}]"
