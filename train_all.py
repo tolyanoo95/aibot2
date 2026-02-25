@@ -149,15 +149,14 @@ def train_all():
 
         X_all = pd.concat(all_X, ignore_index=True)
         y_all = pd.concat(all_y, ignore_index=True)
-        # Map: SELL(-1) → 0, BUY(1) → 1 for binary classification
-        y_mapped = y_all.map({-1: 0, 1: 1})
 
         console.print(f"  Samples: {len(X_all):,} | BUY: {(y_all==1).sum()} SELL: {(y_all==-1).sum()}")
 
         trend_model = MLSignalModel(config.ML_MODEL_PATH)
         feat_cols = features.get_feature_columns(X_all, model_type="trend")
         available = [c for c in feat_cols if c in X_all.columns]
-        metrics = trend_model.train(X_all[available], y_mapped, feature_names=available)
+        # Pass original labels (-1, 1) — MLSignalModel.train() maps them internally
+        metrics = trend_model.train(X_all[available], y_all, feature_names=available)
 
         results["Trend"] = {"accuracy": metrics.get("cv_accuracy", 0), "std": metrics.get("cv_std", 0), "status": "OK"}
         console.print(f"  [green]Trend: {metrics.get('cv_accuracy', 0):.4f} (±{metrics.get('cv_std', 0):.4f})[/green]")
