@@ -104,6 +104,17 @@ def _train_regime(pair_data, features):
     X_all = pd.concat(all_X, ignore_index=True)
     y_all = pd.concat(all_y, ignore_index=True)
 
+    # Balance classes: downsample RANGE to match ~2x of minority class
+    trend_count = (y_all == 1).sum()
+    rev_count = (y_all == 2).sum()
+    target_range = max(trend_count, rev_count) * 3  # 3x of largest minority
+    range_idx = y_all[y_all == 0].index
+    if len(range_idx) > target_range:
+        range_keep = y_all[y_all == 0].sample(n=target_range, random_state=42).index
+        keep = (y_all != 0) | y_all.index.isin(range_keep)
+        X_all = X_all[keep].reset_index(drop=True)
+        y_all = y_all[keep].reset_index(drop=True)
+
     regime_clf = RegimeClassifier()
     regime_cols = [c for c in features.REGIME_FEATURES if c in X_all.columns]
     metrics = regime_clf.train(X_all, y_all, feature_names=regime_cols)
@@ -126,6 +137,17 @@ def _train_reversal(pair_data, features):
 
     X_all = pd.concat(all_X, ignore_index=True)
     y_all = pd.concat(all_y, ignore_index=True)
+
+    # Balance: downsample HOLD to ~3x of reversal signals
+    buy_count = (y_all == 1).sum()
+    sell_count = (y_all == -1).sum()
+    target_hold = max(buy_count, sell_count) * 3
+    hold_idx = y_all[y_all == 0].index
+    if len(hold_idx) > target_hold:
+        hold_keep = y_all[y_all == 0].sample(n=target_hold, random_state=42).index
+        keep = (y_all != 0) | y_all.index.isin(hold_keep)
+        X_all = X_all[keep].reset_index(drop=True)
+        y_all = y_all[keep].reset_index(drop=True)
 
     rev_cols = features.get_feature_columns(X_all, model_type="reversal")
     available = [c for c in rev_cols if c in X_all.columns]
