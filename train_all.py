@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Train ALL models at once: Trend + Regime + Reversal + Range.
-Fetches data ONCE, then trains all models in parallel on shared data.
+Train ALL models in parallel: Trend + Regime + Reversal + Range.
+Fetches data ONCE, then trains all 4 models simultaneously.
 
 Usage:
     python train_all.py
@@ -18,6 +18,7 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn, MofNCompleteColumn
 
 from src.config import config
 from src.data_fetcher import BinanceDataFetcher
@@ -56,12 +57,127 @@ def fetch_pair_data(pair, fetcher, indicators, features):
         return pair, None
 
 
+# ── Individual model trainers (called in parallel) ─────────
+
+def _train_trend(pair_data, features):
+    """Train Trend Model on shared data."""
+    all_X, all_y = [], []
+    for pair, d in pair_data.items():
+        X = d["X"]
+        y = features.create_labels(
+            d["df_5m"],
+            tp_multiplier=config.LABEL_TP_MULTIPLIER,
+            sl_multiplier=config.LABEL_SL_MULTIPLIER,
+            max_bars=config.LABEL_MAX_BARS,
+            binary=True,
+        )
+        common = X.index.intersection(y.index)
+        X_c = X.loc[common].iloc[:-config.LABEL_MAX_BARS]
+        y_c = y.loc[common].iloc[:-config.LABEL_MAX_BARS]
+        keep = y_c != 0
+        all_X.append(X_c.loc[keep])
+        all_y.append(y_c.loc[keep])
+
+    X_all = pd.concat(all_X, ignore_index=True)
+    y_all = pd.concat(all_y, ignore_index=True)
+
+    trend_model = MLSignalModel(config.ML_MODEL_PATH)
+    feat_cols = features.get_feature_columns(X_all, model_type="trend")
+    available = [c for c in feat_cols if c in X_all.columns]
+    # Pass original labels (-1, 1) — MLSignalModel maps them internally
+    metrics = trend_model.train(X_all[available], y_all, feature_names=available)
+
+    samples = f"BUY:{(y_all==1).sum()} SELL:{(y_all==-1).sum()}"
+    return "Trend", metrics, len(X_all), samples
+
+
+def _train_regime(pair_data, features):
+    """Train Regime Classifier on shared data."""
+    all_X, all_y = [], []
+    for pair, d in pair_data.items():
+        X = d["X"]
+        y = features.create_regime_labels(d["df_5m"], max_bars=config.LABEL_MAX_BARS)
+        common = X.index.intersection(y.index)
+        all_X.append(X.loc[common].iloc[:-config.LABEL_MAX_BARS])
+        all_y.append(y.loc[common].iloc[:-config.LABEL_MAX_BARS])
+
+    X_all = pd.concat(all_X, ignore_index=True)
+    y_all = pd.concat(all_y, ignore_index=True)
+
+    regime_clf = RegimeClassifier()
+    regime_cols = [c for c in features.REGIME_FEATURES if c in X_all.columns]
+    metrics = regime_clf.train(X_all, y_all, feature_names=regime_cols)
+
+    samples = f"T:{(y_all==1).sum()} R:{(y_all==2).sum()} Rng:{(y_all==0).sum()}"
+    return "Regime", metrics, len(X_all), samples
+
+
+def _train_reversal(pair_data, features):
+    """Train Reversal Model on shared data."""
+    from train_reversal import create_reversal_labels
+
+    all_X, all_y = [], []
+    for pair, d in pair_data.items():
+        X = d["X"]
+        y = create_reversal_labels(d["df_5m"], max_bars=config.LABEL_MAX_BARS)
+        common = X.index.intersection(y.index)
+        all_X.append(X.loc[common].iloc[:-config.LABEL_MAX_BARS])
+        all_y.append(y.loc[common].iloc[:-config.LABEL_MAX_BARS])
+
+    X_all = pd.concat(all_X, ignore_index=True)
+    y_all = pd.concat(all_y, ignore_index=True)
+
+    rev_cols = features.get_feature_columns(X_all, model_type="reversal")
+    available = [c for c in rev_cols if c in X_all.columns]
+    y_mapped = y_all.map({-1: 0, 0: 1, 1: 2})
+
+    rev_model = ReversalModel()
+    metrics = rev_model.train(X_all, y_mapped, feature_names=available)
+
+    samples = f"BUY:{(y_all==1).sum()} SELL:{(y_all==-1).sum()} HOLD:{(y_all==0).sum()}"
+    return "Reversal", metrics, len(X_all), samples
+
+
+def _train_range(pair_data, features):
+    """Train Range Model on shared data."""
+    from train_range import create_range_labels
+
+    all_X, all_y = [], []
+    for pair, d in pair_data.items():
+        X = d["X"]
+        y = create_range_labels(d["df_5m"], max_bars=6)
+        common = X.index.intersection(y.index)
+        all_X.append(X.loc[common].iloc[:-6])
+        all_y.append(y.loc[common].iloc[:-6])
+
+    X_all = pd.concat(all_X, ignore_index=True)
+    y_all = pd.concat(all_y, ignore_index=True)
+
+    buy_sell = y_all != 0
+    hold_sample = y_all[y_all == 0].sample(frac=0.3, random_state=42)
+    keep_idx = buy_sell | y_all.index.isin(hold_sample.index)
+    X_filt = X_all[keep_idx]
+    y_filt = y_all[keep_idx]
+
+    rng_cols = features.get_feature_columns(X_filt, model_type="range")
+    available = [c for c in rng_cols if c in X_filt.columns]
+    y_mapped = y_filt.map({-1: 0, 0: 1, 1: 2})
+
+    rng_model = RangeModel()
+    metrics = rng_model.train(X_filt, y_mapped, feature_names=available)
+
+    samples = f"BUY:{(y_filt==1).sum()} SELL:{(y_filt==-1).sum()} HOLD:{(y_filt==0).sum()}"
+    return "Range", metrics, len(X_filt), samples
+
+
+# ── Main ──────────────────────────────────────────────────
+
 def train_all():
     t0 = time.time()
     console.print(Panel.fit(
         f"[bold]Multi-Model Training Pipeline[/bold]\n"
         f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"Models: Trend + Regime + Reversal + Range\n"
+        f"Models: Trend + Regime + Reversal + Range (parallel)\n"
         f"Pairs: {len(config.TRADING_PAIRS)} | Candles: {config.TRAIN_CANDLES}",
         border_style="green",
     ))
@@ -71,23 +187,17 @@ def train_all():
     features = FeatureEngineer()
 
     # ═══════════════════════════════════════════════════════
-    # STEP 1: Fetch data ONCE for all models
+    # STEP 1: Fetch data ONCE
     # ═══════════════════════════════════════════════════════
-    console.print("\n[bold cyan]═══ STEP 1: Fetching Data (once for all models) ═══[/bold cyan]")
-
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn, MofNCompleteColumn
+    console.print("\n[bold cyan]═══ STEP 1: Fetching Data ═══[/bold cyan]")
 
     pair_data = {}
     with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(bar_width=30),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
+        SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=30), MofNCompleteColumn(), TimeElapsedColumn(),
         console=console,
     ) as progress:
-        fetch_task = progress.add_task("Fetching pairs …", total=len(config.TRADING_PAIRS))
-
+        task = progress.add_task("Fetching …", total=len(config.TRADING_PAIRS))
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {
                 pool.submit(fetch_pair_data, pair, fetcher, indicators, features): pair
@@ -97,179 +207,53 @@ def train_all():
                 pair, data = future.result()
                 if data is not None:
                     pair_data[pair] = data
-                    progress.update(fetch_task, advance=1, description=f"Fetched {pair} ({len(data['X'])} bars)")
+                    progress.update(task, advance=1, description=f"Fetched {pair} ({len(data['X'])} bars)")
                 else:
-                    progress.update(fetch_task, advance=1, description=f"[red]{pair} SKIP[/red]")
+                    progress.update(task, advance=1, description=f"[red]{pair} SKIP[/red]")
 
     if not pair_data:
         console.print("[red]No data![/red]")
         return
 
-    total_bars = sum(len(d['X']) for d in pair_data.values())
-    console.print(f"\n  ✓ Total: {total_bars:,} bars from {len(pair_data)} pairs")
+    total_bars = sum(len(d["X"]) for d in pair_data.values())
+    console.print(f"\n  ✓ {total_bars:,} bars from {len(pair_data)} pairs")
+
+    # ═══════════════════════════════════════════════════════
+    # STEP 2: Train all 4 models in PARALLEL
+    # ═══════════════════════════════════════════════════════
+    console.print("\n[bold cyan]═══ STEP 2: Training 4 Models (parallel) ═══[/bold cyan]")
 
     results = {}
-    model_progress = Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(bar_width=30),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
+    with Progress(
+        SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=30), MofNCompleteColumn(), TimeElapsedColumn(),
         console=console,
-    )
-    model_task = model_progress.add_task("Training models …", total=4)
+    ) as progress:
+        task = progress.add_task("Training …", total=4)
 
-    # ═══════════════════════════════════════════════════════
-    # STEP 2: Train all models on shared data
-    # ═══════════════════════════════════════════════════════
-
-    model_progress.start()
-
-    # ── 2a. Trend Model ────────────────────────────────────
-    model_progress.update(model_task, description="[cyan]Training Trend Model …[/cyan]")
-    console.print("\n[bold cyan]═══ 2a/4 TREND MODEL ═══[/bold cyan]")
-    try:
-        all_X = []
-        all_y = []
-        for pair, d in pair_data.items():
-            X = d["X"]
-            y = features.create_labels(
-                d["df_5m"],
-                tp_multiplier=config.LABEL_TP_MULTIPLIER,
-                sl_multiplier=config.LABEL_SL_MULTIPLIER,
-                max_bars=config.LABEL_MAX_BARS,
-                binary=True,
-            )
-            common = X.index.intersection(y.index)
-            X_c = X.loc[common].iloc[:-config.LABEL_MAX_BARS]
-            y_c = y.loc[common].iloc[:-config.LABEL_MAX_BARS]
-            keep = y_c != 0
-            all_X.append(X_c.loc[keep])
-            all_y.append(y_c.loc[keep])
-
-        X_all = pd.concat(all_X, ignore_index=True)
-        y_all = pd.concat(all_y, ignore_index=True)
-
-        console.print(f"  Samples: {len(X_all):,} | BUY: {(y_all==1).sum()} SELL: {(y_all==-1).sum()}")
-
-        trend_model = MLSignalModel(config.ML_MODEL_PATH)
-        feat_cols = features.get_feature_columns(X_all, model_type="trend")
-        available = [c for c in feat_cols if c in X_all.columns]
-        # Pass original labels (-1, 1) — MLSignalModel.train() maps them internally
-        metrics = trend_model.train(X_all[available], y_all, feature_names=available)
-
-        results["Trend"] = {"accuracy": metrics.get("cv_accuracy", 0), "std": metrics.get("cv_std", 0), "status": "OK"}
-        console.print(f"  [green]Trend: {metrics.get('cv_accuracy', 0):.4f} (±{metrics.get('cv_std', 0):.4f})[/green]")
-    except Exception as exc:
-        results["Trend"] = {"accuracy": 0, "std": 0, "status": f"FAIL: {exc}"}
-        console.print(f"  [red]FAILED: {exc}[/red]")
-
-    model_progress.update(model_task, advance=1, description="[cyan]Training Regime Classifier …[/cyan]")
-
-    # ── 2b. Regime Classifier ──────────────────────────────
-    console.print("\n[bold cyan]═══ 2b/4 REGIME CLASSIFIER ═══[/bold cyan]")
-    try:
-        all_X = []
-        all_y = []
-        for pair, d in pair_data.items():
-            X = d["X"]
-            y = features.create_regime_labels(d["df_5m"], max_bars=config.LABEL_MAX_BARS)
-            common = X.index.intersection(y.index)
-            all_X.append(X.loc[common].iloc[:-config.LABEL_MAX_BARS])
-            all_y.append(y.loc[common].iloc[:-config.LABEL_MAX_BARS])
-
-        X_all = pd.concat(all_X, ignore_index=True)
-        y_all = pd.concat(all_y, ignore_index=True)
-
-        console.print(f"  Samples: {len(X_all):,} | TREND: {(y_all==1).sum()} REV: {(y_all==2).sum()} RANGE: {(y_all==0).sum()}")
-
-        regime_clf = RegimeClassifier()
-        regime_cols = [c for c in features.REGIME_FEATURES if c in X_all.columns]
-        metrics = regime_clf.train(X_all, y_all, feature_names=regime_cols)
-
-        results["Regime"] = {"accuracy": metrics.get("cv_accuracy", 0), "std": metrics.get("cv_std", 0), "status": "OK"}
-        console.print(f"  [green]Regime: {metrics.get('cv_accuracy', 0):.4f} (±{metrics.get('cv_std', 0):.4f})[/green]")
-    except Exception as exc:
-        results["Regime"] = {"accuracy": 0, "std": 0, "status": f"FAIL: {exc}"}
-        console.print(f"  [red]FAILED: {exc}[/red]")
-
-    model_progress.update(model_task, advance=1, description="[cyan]Training Reversal Model …[/cyan]")
-
-    # ── 2c. Reversal Model ─────────────────────────────────
-    console.print("\n[bold cyan]═══ 2c/4 REVERSAL MODEL ═══[/bold cyan]")
-    try:
-        from train_reversal import create_reversal_labels
-
-        all_X = []
-        all_y = []
-        for pair, d in pair_data.items():
-            X = d["X"]
-            y = create_reversal_labels(d["df_5m"], max_bars=config.LABEL_MAX_BARS)
-            common = X.index.intersection(y.index)
-            all_X.append(X.loc[common].iloc[:-config.LABEL_MAX_BARS])
-            all_y.append(y.loc[common].iloc[:-config.LABEL_MAX_BARS])
-
-        X_all = pd.concat(all_X, ignore_index=True)
-        y_all = pd.concat(all_y, ignore_index=True)
-
-        console.print(f"  Samples: {len(X_all):,} | BUY_rev: {(y_all==1).sum()} SELL_rev: {(y_all==-1).sum()} HOLD: {(y_all==0).sum()}")
-
-        rev_cols = features.get_feature_columns(X_all, model_type="reversal")
-        available = [c for c in rev_cols if c in X_all.columns]
-        y_mapped = y_all.map({-1: 0, 0: 1, 1: 2})
-
-        rev_model = ReversalModel()
-        metrics = rev_model.train(X_all, y_mapped, feature_names=available)
-
-        results["Reversal"] = {"accuracy": metrics.get("cv_accuracy", 0), "std": metrics.get("cv_std", 0), "status": "OK"}
-        console.print(f"  [green]Reversal: {metrics.get('cv_accuracy', 0):.4f} (±{metrics.get('cv_std', 0):.4f})[/green]")
-    except Exception as exc:
-        results["Reversal"] = {"accuracy": 0, "std": 0, "status": f"FAIL: {exc}"}
-        console.print(f"  [red]FAILED: {exc}[/red]")
-
-    model_progress.update(model_task, advance=1, description="[cyan]Training Range Model …[/cyan]")
-
-    # ── 2d. Range Model ────────────────────────────────────
-    console.print("\n[bold cyan]═══ 2d/4 RANGE MODEL ═══[/bold cyan]")
-    try:
-        from train_range import create_range_labels
-
-        all_X = []
-        all_y = []
-        for pair, d in pair_data.items():
-            X = d["X"]
-            y = create_range_labels(d["df_5m"], max_bars=6)
-            common = X.index.intersection(y.index)
-            all_X.append(X.loc[common].iloc[:-6])
-            all_y.append(y.loc[common].iloc[:-6])
-
-        X_all = pd.concat(all_X, ignore_index=True)
-        y_all = pd.concat(all_y, ignore_index=True)
-
-        # Downsample HOLD
-        buy_sell = y_all != 0
-        hold_sample = y_all[y_all == 0].sample(frac=0.3, random_state=42)
-        keep_idx = buy_sell | y_all.index.isin(hold_sample.index)
-        X_filt = X_all[keep_idx]
-        y_filt = y_all[keep_idx]
-
-        console.print(f"  Samples: {len(X_filt):,} | BUY: {(y_filt==1).sum()} SELL: {(y_filt==-1).sum()} HOLD: {(y_filt==0).sum()}")
-
-        rng_cols = features.get_feature_columns(X_filt, model_type="range")
-        available = [c for c in rng_cols if c in X_filt.columns]
-        y_mapped = y_filt.map({-1: 0, 0: 1, 1: 2})
-
-        rng_model = RangeModel()
-        metrics = rng_model.train(X_filt, y_mapped, feature_names=available)
-
-        results["Range"] = {"accuracy": metrics.get("cv_accuracy", 0), "std": metrics.get("cv_std", 0), "status": "OK"}
-        console.print(f"  [green]Range: {metrics.get('cv_accuracy', 0):.4f} (±{metrics.get('cv_std', 0):.4f})[/green]")
-    except Exception as exc:
-        results["Range"] = {"accuracy": 0, "std": 0, "status": f"FAIL: {exc}"}
-        console.print(f"  [red]FAILED: {exc}[/red]")
-
-    model_progress.update(model_task, advance=1, description="[green]All models trained![/green]")
-    model_progress.stop()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {
+                pool.submit(_train_trend, pair_data, features): "Trend",
+                pool.submit(_train_regime, pair_data, features): "Regime",
+                pool.submit(_train_reversal, pair_data, features): "Reversal",
+                pool.submit(_train_range, pair_data, features): "Range",
+            }
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    model_name, metrics, n_samples, samples_str = future.result()
+                    results[model_name] = {
+                        "accuracy": metrics.get("cv_accuracy", 0),
+                        "std": metrics.get("cv_std", 0),
+                        "samples": n_samples,
+                        "detail": samples_str,
+                        "status": "OK",
+                    }
+                    acc = metrics.get("cv_accuracy", 0)
+                    progress.update(task, advance=1, description=f"[green]{model_name}: {acc:.4f}[/green]")
+                except Exception as exc:
+                    results[name] = {"accuracy": 0, "std": 0, "samples": 0, "detail": "", "status": f"FAIL: {exc}"}
+                    progress.update(task, advance=1, description=f"[red]{name}: FAILED[/red]")
 
     # ═══════════════════════════════════════════════════════
     # SUMMARY
@@ -282,15 +266,20 @@ def train_all():
     table.add_column("Model", style="bold")
     table.add_column("Accuracy", justify="right")
     table.add_column("Std", justify="right")
+    table.add_column("Samples", justify="right")
+    table.add_column("Distribution")
     table.add_column("Status")
 
-    for name, r in results.items():
-        status_style = "green" if r["status"] == "OK" else "red"
+    for name in ["Trend", "Regime", "Reversal", "Range"]:
+        r = results.get(name, {"accuracy": 0, "std": 0, "samples": 0, "detail": "", "status": "SKIP"})
+        style = "green" if r["status"] == "OK" else "red"
         table.add_row(
             name,
             f"{r['accuracy']:.4f}" if r["accuracy"] > 0 else "—",
             f"±{r['std']:.4f}" if r["std"] > 0 else "—",
-            f"[{status_style}]{r['status']}[/{status_style}]",
+            f"{r['samples']:,}" if r["samples"] > 0 else "—",
+            r.get("detail", ""),
+            f"[{style}]{r['status']}[/{style}]",
         )
 
     console.print()
