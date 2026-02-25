@@ -38,15 +38,14 @@ console = Console()
 
 
 def fetch_pair_data(pair, fetcher, indicators, features):
-    """Fetch and process data for one pair (all timeframes)."""
+    """Fetch and process data for one pair (all timeframes, with pagination)."""
     try:
         data = {}
-        for tf, limit in [("5m", config.TRAIN_CANDLES), ("15m", config.TRAIN_CANDLES // 3), ("1h", config.TRAIN_CANDLES // 12)]:
-            raw = fetcher.fetch_ohlcv(pair, tf, limit=limit)
+        for tf, total in [("5m", config.TRAIN_CANDLES), ("15m", config.TRAIN_CANDLES // 3), ("1h", config.TRAIN_CANDLES // 12)]:
+            raw = fetcher.fetch_ohlcv_extended(pair, tf, total_candles=total)
             if raw.empty:
                 return pair, None
             data[tf] = indicators.calculate_all(raw)
-            time.sleep(0.2)
 
         X, feat_names = features.get_feature_matrix_mtf(
             data["5m"], data["15m"], data["1h"],
@@ -125,6 +124,7 @@ def train_all():
 
         X_all = pd.concat(all_X, ignore_index=True)
         y_all = pd.concat(all_y, ignore_index=True)
+        # Map: SELL(-1) → 0, BUY(1) → 1 for binary classification
         y_mapped = y_all.map({-1: 0, 1: 1})
 
         console.print(f"  Samples: {len(X_all):,} | BUY: {(y_all==1).sum()} SELL: {(y_all==-1).sum()}")
