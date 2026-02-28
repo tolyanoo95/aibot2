@@ -56,13 +56,13 @@ class Config:
 
     # ── ML Model ─────────────────────────────────────────────
     ML_MODEL_PATH: str = "models/signal_model.json"
-    PREDICTION_THRESHOLD: float = 0.70  # min confidence for a signal (only high-quality trades)
+    PREDICTION_THRESHOLD: float = float(os.getenv("PREDICTION_THRESHOLD", "0.70"))
 
-    # ── Trade parameters (backtest-optimized) ────────────────
-    SL_ATR_MULTIPLIER: float = 1.0      # stop-loss = ATR * this (tight SL, R:R 1:3)
-    TP_ATR_MULTIPLIER: float = 3.0      # take-profit = ATR * this (wide TP for big moves)
-    MIN_SL_PCT: float = 0.3             # minimum SL distance in % (floor for low-ATR periods)
-    MAX_HOLD_BARS: int = 18             # max holding time in candles (90 min on 5m)
+    # ── Trade parameters ────────────────────────────────────
+    SL_ATR_MULTIPLIER: float = float(os.getenv("SL_ATR_MULTIPLIER", "1.0"))
+    TP_ATR_MULTIPLIER: float = float(os.getenv("TP_ATR_MULTIPLIER", "3.0"))
+    MIN_SL_PCT: float = float(os.getenv("MIN_SL_PCT", "0.3"))
+    MAX_HOLD_BARS: int = int(os.getenv("MAX_HOLD_BARS", "18"))
 
     # ── Risk management ──────────────────────────────────────
     RISK_PER_TRADE: float = 0.01        # 1% risk per trade
