@@ -59,10 +59,10 @@ class Config:
     PREDICTION_THRESHOLD: float = 0.70  # min confidence for a signal (only high-quality trades)
 
     # ── Trade parameters (backtest-optimized) ────────────────
-    SL_ATR_MULTIPLIER: float = 2.5      # stop-loss = ATR * this (R:R 1:1 symmetric)
-    TP_ATR_MULTIPLIER: float = 2.5      # take-profit = ATR * this (R:R 1:1 symmetric)
+    SL_ATR_MULTIPLIER: float = 1.0      # stop-loss = ATR * this (tight SL, R:R 1:3)
+    TP_ATR_MULTIPLIER: float = 3.0      # take-profit = ATR * this (wide TP for big moves)
     MIN_SL_PCT: float = 0.3             # minimum SL distance in % (floor for low-ATR periods)
-    MAX_HOLD_BARS: int = 12             # max holding time in candles (60 min on 5m)
+    MAX_HOLD_BARS: int = 18             # max holding time in candles (90 min on 5m)
 
     # ── Risk management ──────────────────────────────────────
     RISK_PER_TRADE: float = 0.01        # 1% risk per trade

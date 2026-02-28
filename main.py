@@ -332,7 +332,7 @@ class CryptoScanner:
         elif self._consecutive_sl >= 2:
             threshold = max(threshold, threshold + 0.075)
 
-        fresh_enough = signal.age_bars <= 2
+        fresh_enough = True  # disabled — NO FRESH gives better results
         if (
             signal.direction != "NEUTRAL"
             and signal.confidence >= threshold
@@ -575,7 +575,7 @@ class CryptoScanner:
                     # reset signal tracking so bot can re-enter after cooldown
                     if sym in self._active_signals:
                         del self._active_signals[sym]
-                    self._closed_cooldown[sym] = 2  # wait 2 bars before re-entry
+                    self._closed_cooldown[sym] = 4  # wait 4 bars before re-entry
 
                     # track consecutive SL for reversal protection
                     pnl_pct = result.get("pnl_pct", 0) if result else 0
