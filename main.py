@@ -169,6 +169,7 @@ class CryptoScanner:
         # current state
         last_row = data["primary"].iloc[-1]
         price = float(last_row["close"])
+        candle_open = float(last_row["open"])
         high = float(last_row["high"])
         low = float(last_row["low"])
         atr = float(last_row.get("atr", 0))
@@ -253,14 +254,14 @@ class CryptoScanner:
         comb_inv_sl, comb_inv_tp = _sl_tp(combined_inv)
 
         _trade_logger.info(
-            "SCAN %s | price=%.6g | atr=%.4f | vol=%.2f | adx=%.1f | ob=%.2f | "
+            "SCAN %s | price=%.6g | open=%.6g | high=%.6g | low=%.6g | atr=%.4f | vol=%.2f | adx=%.1f | ob=%.2f | "
             "ml=%s(%.1f%%) | llm=%s(%d/10) | combined=%s(%.1f%%) | "
             "ml_only=%s(%s) sl=%.6g tp=%.6g | ml_inv=%s sl=%.6g tp=%.6g | "
             "llm_only=%s(%s) sl=%.6g tp=%.6g | llm_inv=%s sl=%.6g tp=%.6g | "
             "comb_inv=%s sl=%.6g tp=%.6g | "
             "filter=%s | status=%s | age=%d | regime=%s | "
             "rsi=%.1f | funding=%.6f | ls_ratio=%.2f | llm_reason=%s",
-            symbol, price, atr, volume_ratio, adx, ob_imbalance,
+            symbol, price, candle_open, high, low, atr, volume_ratio, adx, ob_imbalance,
             {1: "BUY", -1: "SELL", 0: "HOLD"}.get(ml_sig, "?"),
             ml_conf_pct,
             llm_result.get("direction", "?"),
