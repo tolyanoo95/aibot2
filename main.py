@@ -649,11 +649,18 @@ class CryptoScanner:
         Display.show_info(f"AI Crypto Futures Bot v{VERSION}")
         Display.show_info(f"Pairs: {', '.join(config.TRADING_PAIRS)}")
         Display.show_info(f"Primary TF: {config.PRIMARY_TIMEFRAME}")
+        import pathlib
+        model_date = "unknown"
+        model_file = pathlib.Path(config.ML_MODEL_PATH)
+        if model_file.exists():
+            from datetime import datetime
+            model_date = datetime.fromtimestamp(model_file.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
         Display.show_info(
             f"ML Trend: {'loaded' if self.ml_model.is_trained else 'NOT trained'}"
             f" | Regime: {'loaded' if self.regime_clf.is_trained else 'NOT trained'}"
             f" | Reversal: {'loaded' if self.reversal_model.is_trained else 'NOT trained'}"
             f" | Range: {'loaded' if self.range_model.is_trained else 'NOT trained'}"
+            f" | Models trained: {model_date}"
         )
         Display.show_info(f"LLM: {'enabled' if config.USE_LLM else 'disabled'}")
         Display.show_info(f"Multi-model: Regime → Trend(2.5x) / Reversal(1.5x) / Range(1.0x) ATR")
