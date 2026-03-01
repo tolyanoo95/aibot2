@@ -181,19 +181,9 @@ class CryptoScanner:
         ema9 = float(last_row.get("ema_9", 0)) if pd.notna(last_row.get("ema_9")) else 0
         ema_trend = (1 if price > ema9 else -1) if ema9 > 0 else 0
 
-        # ── Dynamic SL/TP based on regime ──────────────────────
-        if regime == "RANGE":
-            self.signal_gen.config.SL_ATR_MULTIPLIER = 1.0
-            self.signal_gen.config.TP_ATR_MULTIPLIER = 1.0
-            self.signal_gen.config.MAX_HOLD_BARS = 6
-        elif regime == "REVERSAL":
-            self.signal_gen.config.SL_ATR_MULTIPLIER = 1.5
-            self.signal_gen.config.TP_ATR_MULTIPLIER = 1.5
-            self.signal_gen.config.MAX_HOLD_BARS = 12
-        else:
-            self.signal_gen.config.SL_ATR_MULTIPLIER = 2.5
-            self.signal_gen.config.TP_ATR_MULTIPLIER = 2.5
-            self.signal_gen.config.MAX_HOLD_BARS = 12
+        # ── SL/TP from .env (no regime override) ──────────────
+        # Previously had per-regime SL/TP but grid search showed
+        # fixed SL=1.0 TP=3.0 works best across all regimes
 
         signal = self.signal_gen.generate(
             symbol=symbol,
