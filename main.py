@@ -663,8 +663,18 @@ class CryptoScanner:
             f" | Models trained: {model_date}"
         )
         Display.show_info(f"LLM: {'enabled' if config.USE_LLM else 'disabled'}")
-        Display.show_info(f"Multi-model: Regime → Trend(2.5x) / Reversal(1.5x) / Range(1.0x) ATR")
-        Display.show_info(f"Threshold: {config.PREDICTION_THRESHOLD*100:.0f}% | Fallback: Trend Model if regime uncertain")
+        Display.show_info(
+            f"SL: {config.SL_ATR_MULTIPLIER}x ATR | TP: {config.TP_ATR_MULTIPLIER}x ATR"
+            f" | Max hold: {config.MAX_HOLD_BARS} bars ({config.MAX_HOLD_BARS * 5} min)"
+            f" | R:R 1:{config.TP_ATR_MULTIPLIER/config.SL_ATR_MULTIPLIER:.1f}"
+        )
+        Display.show_info(
+            f"Threshold: {config.PREDICTION_THRESHOLD*100:.0f}%"
+            f" | Cooldown: {os.getenv('COOLDOWN_BARS', '4')} bars"
+            f" | Fresh: {os.getenv('USE_FRESH', 'false')}"
+            f" | Dead hours: {config.FILTER_DEAD_HOURS or 'off'}"
+        )
+        Display.show_info(f"Multi-model: Regime → Trend / Reversal / Range")
         mode_color = "green" if config.TRADING_MODE == "paper" else "bold red"
         Display.show_info(
             f"Trading mode: [{mode_color}]{config.TRADING_MODE.upper()}[/{mode_color}]"
