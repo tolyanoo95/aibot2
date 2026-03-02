@@ -167,8 +167,8 @@ class CryptoScanner:
         # ── LLM analysis (rate-limited, with full context) ───
         llm_result = self._get_llm(symbol, data, ctx)
 
-        # current state
-        last_row = data["primary"].iloc[-1]
+        # current state (use primary_with_ctx so OI/context features are visible in logs)
+        last_row = primary_with_ctx.iloc[-1]
         price = float(last_row["close"])
         candle_open = float(last_row["open"])
         high = float(last_row["high"])
