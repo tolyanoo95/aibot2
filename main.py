@@ -10,7 +10,7 @@ Usage:
     python main.py --once     # single scan then exit
 """
 
-VERSION = "2.0.0"
+VERSION = "3.0.0"
 
 import argparse
 import logging
@@ -252,7 +252,8 @@ class CryptoScanner:
             "llm_only=%s(%s) sl=%.6g tp=%.6g | llm_inv=%s sl=%.6g tp=%.6g | "
             "comb_inv=%s sl=%.6g tp=%.6g | "
             "filter=%s | status=%s | age=%d | regime=%s | "
-            "rsi=%.1f | funding=%.6f | ls_ratio=%.2f | llm_reason=%s",
+            "rsi=%.1f | roc1=%.2f | roc3=%.2f | atr_exp=%.2f | oi_chg=%.2f | "
+            "funding=%.6f | ls_ratio=%.2f | llm_reason=%s",
             symbol, price, candle_open, high, low, atr, volume_ratio, adx, ob_imbalance,
             {1: "BUY", -1: "SELL", 0: "HOLD"}.get(ml_sig, "?"),
             ml_conf_pct,
@@ -274,6 +275,10 @@ class CryptoScanner:
             signal.age_bars,
             signal.market_regime,
             float(last_row.get("rsi", 0)) if pd.notna(last_row.get("rsi")) else 0,
+            float(last_row.get("roc_1", 0)) if pd.notna(last_row.get("roc_1")) else 0,
+            float(last_row.get("roc_3", 0)) if pd.notna(last_row.get("roc_3")) else 0,
+            float(last_row.get("atr_expansion", 1)) if pd.notna(last_row.get("atr_expansion")) else 1,
+            float(last_row.get("oi_change_pct", 0)) if pd.notna(last_row.get("oi_change_pct")) else 0,
             ctx.get("funding_rate", 0) if isinstance(ctx.get("funding_rate"), (int, float)) else 0,
             ctx.get("long_short_ratio", 0),
             llm_reason.replace("\n", " ") if llm_reason else "—",
@@ -348,10 +353,13 @@ class CryptoScanner:
             if opened:
                 _trade_logger.info(
                     "OPEN %s %s | entry=%.6g | sl=%.6g | tp=%.6g | "
-                    "lev=x%d | conf=%.1f%% | mode=%s | reasoning=%s",
+                    "lev=x%d | conf=%.1f%% | disagr=%.0f%% | regime=%s | "
+                    "mode=%s | reasoning=%s",
                     signal.direction, symbol,
                     signal.entry_price, signal.stop_loss, signal.take_profit,
                     signal.leverage, signal.confidence * 100,
+                    ml_disagreement * 100,
+                    signal.market_regime,
                     config.TRADING_MODE,
                     signal.llm_reasoning[:100],
                 )
@@ -555,11 +563,12 @@ class CryptoScanner:
                         _trade_logger.info(
                             "CLOSE %s %s | entry=%.6g | exit=%.6g | "
                             "reason=%s | pnl=%.2f%% | bars=%d | "
-                            "trail_active=%s | health=%s | %s",
+                            "regime=%s | trail_active=%s | health=%s | %s",
                             state.direction, sym,
                             state.entry_price, price,
                             reason, result.get("pnl_pct", 0),
                             state.bars_held,
+                            self._pair_regimes.get(sym, "?"),
                             state.trailing_active,
                             state.health,
                             state.health_reason,
