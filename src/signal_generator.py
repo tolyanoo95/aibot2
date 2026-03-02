@@ -76,6 +76,7 @@ class SignalGenerator:
     ) -> Signal:
         ml_sig = ml_result.get("signal", 0)
         ml_conf = ml_result.get("confidence", 0.0)
+        ml_disagreement = ml_result.get("disagreement", 0.0)
 
         llm_dir = llm_result.get("direction", "NEUTRAL")
         llm_conf = llm_result.get("confidence", 0)
@@ -84,6 +85,20 @@ class SignalGenerator:
         risk = llm_result.get("risk_assessment", "HIGH")
 
         direction, confidence = self._combine(ml_sig, ml_conf, llm_dir, llm_conf)
+
+        # Penalize confidence when ensemble models disagree
+        if ml_disagreement > 0 and direction != "NEUTRAL":
+            if ml_disagreement >= 0.5:
+                # Majority disagrees (2/3 models) — heavy penalty
+                confidence *= 0.60
+                logger.info(
+                    "%s ensemble disagreement %.0f%% — confidence reduced to %.1f%%",
+                    symbol, ml_disagreement * 100, confidence * 100,
+                )
+            else:
+                # Minority disagrees (1/3 models) — moderate penalty
+                confidence *= 0.85
+            confidence = round(confidence, 3)
 
         # ── apply filters ────────────────────────────────────
         filter_reason = ""

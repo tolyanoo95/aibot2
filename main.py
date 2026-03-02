@@ -115,6 +115,7 @@ class CryptoScanner:
 
         # ── market context (OI, L/S, dominance, liq zones) ───
         ctx = self.market_ctx.get_symbol_context(symbol, data["primary"])
+        ctx["symbol"] = symbol
         ctx["funding_rate"] = data.get("funding_rate", 0)
 
         # ── ML features (multi-TF + context) ─────────────────
@@ -214,6 +215,7 @@ class CryptoScanner:
         llm_reason = llm_result.get("reasoning", "")
         ml_sig = ml_result.get("signal", 0)
         ml_conf_pct = ml_result.get("confidence", 0) * 100
+        ml_disagreement = ml_result.get("disagreement", 0.0)
         ml_only_dir = {1: "LONG", -1: "SHORT", 0: "NEUTRAL"}.get(ml_sig, "NEUTRAL")
         ml_only_would_open = ml_conf_pct >= self.signal_gen.config.PREDICTION_THRESHOLD * 100 and ml_sig != 0
         llm_dir_raw = llm_result.get("direction", "NEUTRAL")
@@ -245,7 +247,7 @@ class CryptoScanner:
 
         _trade_logger.info(
             "SCAN %s | price=%.6g | open=%.6g | high=%.6g | low=%.6g | atr=%.4f | vol=%.2f | adx=%.1f | ob=%.2f | "
-            "ml=%s(%.1f%%) | llm=%s(%d/10) | combined=%s(%.1f%%) | "
+            "ml=%s(%.1f%% disagr=%.0f%%) | llm=%s(%d/10) | combined=%s(%.1f%%) | "
             "ml_only=%s(%s) sl=%.6g tp=%.6g | ml_inv=%s sl=%.6g tp=%.6g | "
             "llm_only=%s(%s) sl=%.6g tp=%.6g | llm_inv=%s sl=%.6g tp=%.6g | "
             "comb_inv=%s sl=%.6g tp=%.6g | "
@@ -254,6 +256,7 @@ class CryptoScanner:
             symbol, price, candle_open, high, low, atr, volume_ratio, adx, ob_imbalance,
             {1: "BUY", -1: "SELL", 0: "HOLD"}.get(ml_sig, "?"),
             ml_conf_pct,
+            ml_disagreement * 100,
             llm_result.get("direction", "?"),
             llm_result.get("confidence", 0),
             signal.direction,

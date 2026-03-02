@@ -173,8 +173,8 @@ class MLSignalModel:
     # ── inference ─────────────────────────────────────────────
 
     def predict(self, X: pd.DataFrame) -> Dict:
-        """Average probabilities from all models, return signal."""
-        empty = {"signal": 0, "confidence": 0.0, "probabilities": {}}
+        """Average probabilities from all models, return signal + disagreement."""
+        empty = {"signal": 0, "confidence": 0.0, "probabilities": {}, "disagreement": 0.0}
         if not self.is_trained or not self.models or X.empty:
             return empty
 
@@ -183,11 +183,13 @@ class MLSignalModel:
 
         # collect probabilities from each model
         all_proba = []
+        per_model_cls = []
         for name, model in self.models.items():
             try:
                 proba = model.predict_proba(X_last)[0]
                 if len(proba) == self.n_classes:
                     all_proba.append(proba)
+                    per_model_cls.append(int(np.argmax(proba)))
             except Exception as exc:
                 logger.debug("Predict error %s: %s", name, exc)
 
@@ -198,12 +200,20 @@ class MLSignalModel:
         pred_cls = int(np.argmax(avg_proba))
         confidence = float(avg_proba[pred_cls])
 
+        # Disagreement: fraction of models that disagree with the majority vote
+        disagreement = 0.0
+        if len(per_model_cls) >= 2:
+            majority = max(set(per_model_cls), key=per_model_cls.count)
+            n_disagree = sum(1 for c in per_model_cls if c != majority)
+            disagreement = n_disagree / len(per_model_cls)
+
         if self.n_classes == 2:
             cls_map = _CLASS_TO_LABEL_2
             signal = cls_map[pred_cls]
             return {
                 "signal": signal,
                 "confidence": confidence,
+                "disagreement": disagreement,
                 "probabilities": {
                     "sell": float(avg_proba[0]),
                     "hold": 0.0,
@@ -215,6 +225,7 @@ class MLSignalModel:
             return {
                 "signal": signal,
                 "confidence": confidence,
+                "disagreement": disagreement,
                 "probabilities": {
                     "sell": float(avg_proba[0]),
                     "hold": float(avg_proba[1]),

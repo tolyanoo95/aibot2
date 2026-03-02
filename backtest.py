@@ -209,27 +209,42 @@ def _train_ensemble_on_data(
     return models
 
 
-def _predict_with_ensemble(models: dict, X_row: pd.DataFrame) -> dict:
-    """Average probabilities from all models in the ensemble."""
+def _predict_with_ensemble(models: dict, X_row: pd.DataFrame, n_classes: int = 3) -> dict:
+    """Average probabilities from all models, with disagreement detection."""
     X_clean = X_row.replace([np.inf, -np.inf], np.nan).fillna(0)
 
     all_proba = []
+    per_model_cls = []
     for name, model in models.items():
         try:
             proba = model.predict_proba(X_clean)[0]
-            if len(proba) == 3:
+            if len(proba) == n_classes:
                 all_proba.append(proba)
+                per_model_cls.append(int(np.argmax(proba)))
         except Exception:
             pass
 
     if not all_proba:
-        return {"signal": 0, "confidence": 0.0}
+        return {"signal": 0, "confidence": 0.0, "disagreement": 0.0}
 
     avg_proba = np.mean(all_proba, axis=0)
     pred_cls = int(np.argmax(avg_proba))
+
+    disagreement = 0.0
+    if len(per_model_cls) >= 2:
+        majority = max(set(per_model_cls), key=per_model_cls.count)
+        n_disagree = sum(1 for c in per_model_cls if c != majority)
+        disagreement = n_disagree / len(per_model_cls)
+
+    if n_classes == 2:
+        cls_map = {0: -1, 1: 1}
+    else:
+        cls_map = _CLASS_TO_LABEL
+
     return {
-        "signal": _CLASS_TO_LABEL[pred_cls],
+        "signal": cls_map.get(pred_cls, 0),
         "confidence": float(avg_proba[pred_cls]),
+        "disagreement": disagreement,
     }
 
 
@@ -309,12 +324,14 @@ class Backtester:
             df_5m, df_15m, df_1h,
         )
 
-        # ── 4. labels ────────────────────────────────────────
+        # ── 4. labels (ternary: BUY/SELL/UNCERTAIN) ──────────
         y_full = self.features.create_labels(
             df_5m,
             tp_multiplier=config.LABEL_TP_MULTIPLIER,
             sl_multiplier=config.LABEL_SL_MULTIPLIER,
             max_bars=config.LABEL_MAX_BARS,
+            ternary=True,
+            uncertain_threshold_pct=config.UNCERTAIN_THRESHOLD_PCT,
         )
 
         # align
@@ -547,6 +564,13 @@ class Backtester:
                 pred = _predict_with_ensemble(model, X_row)
                 signal = pred["signal"]
                 confidence = pred["confidence"]
+                disagreement = pred.get("disagreement", 0.0)
+
+                # Ensemble disagreement penalty (same as signal_generator)
+                if disagreement >= 0.5:
+                    confidence *= 0.60
+                elif disagreement > 0:
+                    confidence *= 0.85
 
                 if signal == 0 or confidence < self.min_confidence:
                     continue

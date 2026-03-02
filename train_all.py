@@ -60,23 +60,25 @@ def fetch_pair_data(pair, fetcher, indicators, features):
 # ── Individual model trainers (called in parallel) ─────────
 
 def _train_trend(pair_data, features):
-    """Train Trend Model on shared data."""
+    """Train Trend Model on recent data only (ternary: BUY/SELL/UNCERTAIN)."""
     all_X, all_y = [], []
+    trend_limit = config.TREND_TRAIN_CANDLES
     for pair, d in pair_data.items():
-        X = d["X"]
+        df_5m = d["df_5m"].iloc[-trend_limit:] if len(d["df_5m"]) > trend_limit else d["df_5m"]
+        X = d["X"].iloc[-len(df_5m):] if len(d["X"]) > len(df_5m) else d["X"]
         y = features.create_labels(
-            d["df_5m"],
+            df_5m,
             tp_multiplier=config.LABEL_TP_MULTIPLIER,
             sl_multiplier=config.LABEL_SL_MULTIPLIER,
             max_bars=config.LABEL_MAX_BARS,
-            binary=True,
+            ternary=True,
+            uncertain_threshold_pct=config.UNCERTAIN_THRESHOLD_PCT,
         )
         common = X.index.intersection(y.index)
         X_c = X.loc[common].iloc[:-config.LABEL_MAX_BARS]
         y_c = y.loc[common].iloc[:-config.LABEL_MAX_BARS]
-        keep = y_c != 0
-        all_X.append(X_c.loc[keep])
-        all_y.append(y_c.loc[keep])
+        all_X.append(X_c)
+        all_y.append(y_c)
 
     X_all = pd.concat(all_X, ignore_index=True)
     y_all = pd.concat(all_y, ignore_index=True)
@@ -84,10 +86,12 @@ def _train_trend(pair_data, features):
     trend_model = MLSignalModel(config.ML_MODEL_PATH)
     feat_cols = features.get_feature_columns(X_all, model_type="trend")
     available = [c for c in feat_cols if c in X_all.columns]
-    # Pass original labels (-1, 1) — MLSignalModel maps them internally
     metrics = trend_model.train(X_all[available], y_all, feature_names=available)
 
-    samples = f"BUY:{(y_all==1).sum()} SELL:{(y_all==-1).sum()}"
+    n_buy = int((y_all == 1).sum())
+    n_sell = int((y_all == -1).sum())
+    n_unc = int((y_all == 0).sum())
+    samples = f"BUY:{n_buy} SELL:{n_sell} UNC:{n_unc}"
     return "Trend", metrics, len(X_all), samples
 
 

@@ -33,7 +33,11 @@ class FeatureEngineer:
         "pct_change_1",
         "pct_change_5",
         "pct_change_15",
-        # rate of change (longer windows)
+        # fast rate of change (1-3 bars = 5-15 min, reacts instantly to reversals)
+        "roc_1",
+        "roc_2",
+        "roc_3",
+        # slow rate of change (longer windows)
         "roc_12",
         "roc_48",
         # candle structure
@@ -53,11 +57,19 @@ class FeatureEngineer:
         # volume
         "volume_spike",
         "atr_pct",
+        # ATR expansion (current volatility vs recent average — spike = danger/opportunity)
+        "atr_expansion",
         # regime detection
         "regime_adx",
         "regime_volatility",
         "regime_bb_width",
         "regime_range_score",
+        # time features (cyclical encoding)
+        "hour_sin",
+        "hour_cos",
+        "day_of_week",
+        "session",
+        "is_weekend",
     ]
 
     # Reversal-specific features
@@ -145,6 +157,10 @@ class FeatureEngineer:
         # Normalized ATR (comparable across pairs)
         feat["atr_pct"] = feat["atr"] / feat["close"] * 100
 
+        # ATR expansion: ratio of current ATR to rolling average (>1.0 = volatility spike)
+        atr_mean = feat["atr"].rolling(20).mean()
+        feat["atr_expansion"] = np.where(atr_mean > 0, feat["atr"] / atr_mean, 1.0)
+
         # ── Regime detection features ────────────────────────
         if "ADX_14" in feat.columns:
             feat["regime_adx"] = (feat["ADX_14"] > 25).astype(float)
@@ -171,6 +187,29 @@ class FeatureEngineer:
                     (feat["close"] - feat["BBL_20_2.0"]) / bw,
                     0.5,
                 )
+
+        # ── Time features (cyclical encoding) ─────────────────
+        if hasattr(feat.index, 'hour'):
+            hour = feat.index.hour
+            dow = feat.index.dayofweek
+        elif "timestamp" in feat.columns:
+            ts = pd.to_datetime(feat["timestamp"])
+            hour = ts.dt.hour
+            dow = ts.dt.dayofweek
+        else:
+            hour = pd.Series(0, index=feat.index)
+            dow = pd.Series(0, index=feat.index)
+
+        feat["hour_sin"] = np.sin(2 * np.pi * hour / 24)
+        feat["hour_cos"] = np.cos(2 * np.pi * hour / 24)
+        feat["day_of_week"] = dow
+        # Trading sessions: 0=Asian(00-08 UTC), 1=European(08-13), 2=US(13-22), 3=Night(22-00)
+        feat["session"] = np.select(
+            [hour < 8, hour < 13, hour < 22],
+            [0, 1, 2],
+            default=3,
+        )
+        feat["is_weekend"] = (dow >= 5).astype(float)
 
         # ── Reversal detection features ────────────────────────
         # Multi-timeframe RSI divergence (price vs RSI direction mismatch)
@@ -353,8 +392,11 @@ class FeatureEngineer:
             merged[col] = merged[col].ffill().fillna(0)
         return merged
 
-    @staticmethod
+    _oi_cache: dict = {}  # class-level OI cache: symbol → last OI value
+
+    @classmethod
     def add_realtime_context(
+        cls,
         df: pd.DataFrame,
         context: dict,
     ) -> pd.DataFrame:
@@ -363,9 +405,20 @@ class FeatureEngineer:
         Used during real-time scanning (not training).
         """
         df = df.copy()
+
+        # Compute OI change from cached previous value
+        symbol = context.get("symbol", "")
+        current_oi = context.get("open_interest", 0)
+        oi_change_pct = 0.0
+        if symbol and current_oi > 0:
+            prev_oi = cls._oi_cache.get(symbol, 0)
+            if prev_oi > 0:
+                oi_change_pct = (current_oi - prev_oi) / prev_oi * 100
+            cls._oi_cache[symbol] = current_oi
+
         mapping = {
             "long_short_ratio": context.get("long_short_ratio", 1.0),
-            "oi_change_pct": 0.0,           # can't compute diff from single value
+            "oi_change_pct": oi_change_pct,
             "funding_rate": context.get("funding_rate", 0.0),
             "liq_pressure_enc": {
                 "SHORT_SQUEEZE": 1, "LONG_CASCADE": -1, "NEUTRAL": 0,
@@ -454,6 +507,8 @@ class FeatureEngineer:
         sl_multiplier: float = 1.5,
         max_bars: int = 12,
         binary: bool = False,
+        ternary: bool = False,
+        uncertain_threshold_pct: float = 0.3,
     ) -> pd.Series:
         """
         Triple-barrier labeling for intraday trading.
@@ -462,8 +517,10 @@ class FeatureEngineer:
           - If price hits  entry + ATR * tp_multiplier  first  →  label =  1 (BUY)
           - If price hits  entry − ATR * sl_multiplier  first  →  label = −1 (SELL)
           - If neither within the window:
-              binary=False → label = 0 (HOLD)
-              binary=True  → label based on close direction at max_bars
+              binary=False           → label = 0 (HOLD)
+              binary=True            → label based on close direction at max_bars
+              ternary=True           → label = 0 (UNCERTAIN) if move < threshold,
+                                       otherwise BUY/SELL based on close direction
         """
         labels = pd.Series(0, index=df.index, dtype=int)
         close = df["close"].values
@@ -503,12 +560,22 @@ class FeatureEngineer:
                     resolved = True
                     break
 
-            if not resolved and binary:
-                end_idx = min(i + max_bars, n - 1)
-                if close[end_idx] > close[i]:
-                    labels.iloc[i] = 1
-                else:
-                    labels.iloc[i] = -1
+            if not resolved:
+                if ternary:
+                    end_idx = min(i + max_bars, n - 1)
+                    pct_move = (close[end_idx] - close[i]) / close[i] * 100
+                    if abs(pct_move) < uncertain_threshold_pct:
+                        labels.iloc[i] = 0  # UNCERTAIN
+                    elif pct_move > 0:
+                        labels.iloc[i] = 1
+                    else:
+                        labels.iloc[i] = -1
+                elif binary:
+                    end_idx = min(i + max_bars, n - 1)
+                    if close[end_idx] > close[i]:
+                        labels.iloc[i] = 1
+                    else:
+                        labels.iloc[i] = -1
 
         return labels
 

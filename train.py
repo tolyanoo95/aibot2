@@ -39,9 +39,9 @@ def _htf_candles(n: int, tf: str) -> int:
 
 def train_model():
     console.print(Panel(
-        "[bold cyan]ML Training Pipeline[/bold cyan]\n"
+        "[bold cyan]ML Training Pipeline (Trend)[/bold cyan]\n"
         f"Pairs: {len(config.TRADING_PAIRS)} | "
-        f"Candles: {config.TRAIN_CANDLES} | "
+        f"Candles: {config.TREND_TRAIN_CANDLES} (~{config.TREND_TRAIN_CANDLES // 288} days) | "
         f"Ensemble (XGBoost + LightGBM + CatBoost)",
         box=box.DOUBLE,
     ))
@@ -77,7 +77,7 @@ def train_model():
             with lock:
                 pair_status[symbol] = "[yellow]Fetching 5m …[/yellow]"
             df_5m = fetcher.fetch_ohlcv_extended(
-                symbol, config.PRIMARY_TIMEFRAME, total_candles=config.TRAIN_CANDLES,
+                symbol, config.PRIMARY_TIMEFRAME, total_candles=config.TREND_TRAIN_CANDLES,
             )
             if df_5m.empty or len(df_5m) < 200:
                 with lock:
@@ -117,20 +117,16 @@ def train_model():
                 tp_multiplier=config.LABEL_TP_MULTIPLIER,
                 sl_multiplier=config.LABEL_SL_MULTIPLIER,
                 max_bars=config.LABEL_MAX_BARS,
-                binary=True,
+                ternary=True,
+                uncertain_threshold_pct=config.UNCERTAIN_THRESHOLD_PCT,
             )
             common = X.index.intersection(y.index)
             X = X.loc[common].iloc[: -config.LABEL_MAX_BARS]
             y = y.loc[common].iloc[: -config.LABEL_MAX_BARS]
 
-            # binary mode: filter out any remaining HOLD (label=0)
-            keep = y != 0
-            X = X.loc[keep]
-            y = y.loc[keep]
-
             n_buy = int((y == 1).sum())
             n_sell = int((y == -1).sum())
-            n_hold = 0
+            n_hold = int((y == 0).sum())
 
             with lock:
                 all_X.append(X)
@@ -176,7 +172,7 @@ def train_model():
         f"[bold]Step 2/3 — Dataset Summary[/bold]\n\n"
         f"Total samples: [cyan]{len(X_all):,}[/cyan]  |  "
         f"Features: [cyan]{len(X_all.columns)}[/cyan]  |  "
-        f"Mode: [cyan]{'Binary (BUY/SELL)' if n_hold == 0 else '3-class'}[/cyan]\n"
+        f"Mode: [cyan]{'Ternary (BUY/SELL/UNCERTAIN)' if n_hold > 0 else 'Binary (BUY/SELL)'}[/cyan]\n"
         f"BUY:  [green]{n_buy:>6,}[/green]  "
         f"({n_buy / len(y_all) * 100:.1f}%)  |  "
         f"SELL: [red]{n_sell:>6,}[/red]  "

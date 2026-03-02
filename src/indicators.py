@@ -58,7 +58,12 @@ class TechnicalIndicators:
         df["pct_change_5"] = df["close"].pct_change(5)
         df["pct_change_15"] = df["close"].pct_change(15)
 
-        # ── Rate of change (longer windows) ──────────────────
+        # ── Rate of change ────────────────────────────────────
+        # Fast ROC (1-3 bars = 5-15 min) — react immediately to reversals
+        df["roc_1"] = df["close"].pct_change(1) * 100
+        df["roc_2"] = df["close"].pct_change(2) * 100
+        df["roc_3"] = df["close"].pct_change(3) * 100
+        # Slow ROC (longer windows for trend context)
         df["roc_12"] = df["close"].pct_change(12) * 100
         df["roc_48"] = df["close"].pct_change(48) * 100
 
