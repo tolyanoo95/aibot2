@@ -308,6 +308,21 @@ class CryptoScanner:
                 signal.confidence * 100, ml_disagreement * 100,
                 signal.direction, regime,
             )
+            inv_dir = "SHORT" if signal.direction == "LONG" else "LONG"
+            refined_inv = self.entry_refiner.refine(
+                symbol=symbol,
+                direction=inv_dir,
+                signal_price=price,
+                atr_5m=atr,
+            )
+            _trade_logger.info(
+                "REFINED_INV %s | method=%s | orig=%.6g | entry=%.6g | sl=%.6g | tp=%.6g | atr=%.6g | improvement=%.3f%% | waited=%d bars | conf=%.1f%% | disagr=%.0f%% | dir=%s | regime=%s",
+                symbol, refined_inv.method, price,
+                refined_inv.entry_price, refined_inv.stop_loss, refined_inv.take_profit,
+                atr, refined_inv.improvement_pct, refined_inv.wait_bars,
+                signal.confidence * 100, ml_disagreement * 100,
+                inv_dir, regime,
+            )
             if refined.method != "MARKET":
                 signal.llm_reasoning = (
                     f"[1m {refined.method}: entry improved by "
