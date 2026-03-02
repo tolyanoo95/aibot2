@@ -106,8 +106,8 @@ class Config:
     # ── Training ─────────────────────────────────────────────
     TRAIN_CANDLES: int = int(os.getenv("TRAIN_CANDLES", "30000"))  # ~100 days (fetched for all models)
     TREND_TRAIN_CANDLES: int = int(os.getenv("TREND_TRAIN_CANDLES", "4320"))  # ~15 days (Trend model uses recent data only)
-    LABEL_TP_MULTIPLIER: float = float(os.getenv("LABEL_TP_MULTIPLIER", "3.0"))   # matches TP_ATR_MULTIPLIER
-    LABEL_SL_MULTIPLIER: float = float(os.getenv("LABEL_SL_MULTIPLIER", "1.5"))  # matches SL_ATR_MULTIPLIER
+    LABEL_TP_MULTIPLIER: float = float(os.getenv("LABEL_TP_MULTIPLIER", "2.0"))   # symmetric with LABEL_SL for balanced BUY/SELL
+    LABEL_SL_MULTIPLIER: float = float(os.getenv("LABEL_SL_MULTIPLIER", "2.0"))  # symmetric with LABEL_TP for balanced BUY/SELL
     LABEL_MAX_BARS: int = int(os.getenv("LABEL_MAX_BARS", "18"))  # matches MAX_HOLD_BARS
     UNCERTAIN_THRESHOLD_PCT: float = float(os.getenv("UNCERTAIN_THRESHOLD_PCT", "0.3"))  # ternary: moves below this % → UNCERTAIN
 
