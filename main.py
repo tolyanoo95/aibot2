@@ -284,11 +284,10 @@ class CryptoScanner:
             llm_reason.replace("\n", " ") if llm_reason else "—",
         )
 
-        # ── 1m entry refinement (only for strong, fresh signals) ──
-        threshold = self.signal_gen.config.PREDICTION_THRESHOLD
+        # ── 1m entry refinement (for all non-NEUTRAL signals, enables accurate sim) ──
         if (
             signal.direction != "NEUTRAL"
-            and signal.confidence >= threshold
+            and signal.confidence >= 0.50
             and signal.age_bars <= 2
             and config.USE_1M_ENTRY
         ):
@@ -301,6 +300,14 @@ class CryptoScanner:
             signal.entry_price = refined.entry_price
             signal.stop_loss = refined.stop_loss
             signal.take_profit = refined.take_profit
+            _trade_logger.info(
+                "REFINED %s | method=%s | orig=%.6g | entry=%.6g | sl=%.6g | tp=%.6g | atr=%.6g | improvement=%.3f%% | waited=%d bars | conf=%.1f%% | disagr=%.0f%% | dir=%s | regime=%s",
+                symbol, refined.method, price,
+                refined.entry_price, refined.stop_loss, refined.take_profit,
+                atr, refined.improvement_pct, refined.wait_bars,
+                signal.confidence * 100, ml_disagreement * 100,
+                signal.direction, regime,
+            )
             if refined.method != "MARKET":
                 signal.llm_reasoning = (
                     f"[1m {refined.method}: entry improved by "
@@ -538,6 +545,8 @@ class CryptoScanner:
                 atr = getattr(sig, "candle_atr", 0)
                 rsi = getattr(sig, "candle_rsi", 50)
 
+                old_sl = state.current_sl
+                old_trailing = state.trailing_active
                 state = self._trade_monitor.update_trade(
                     state,
                     high=high,
@@ -551,6 +560,20 @@ class CryptoScanner:
                     ml_confidence=sig.ml_confidence,
                 )
                 self._open_trades[sym] = state
+
+                if state.current_sl != old_sl or (state.trailing_active and not old_trailing):
+                    if state.direction == "LONG":
+                        unrealized = (price - state.entry_price) / state.entry_price * 100
+                    else:
+                        unrealized = (state.entry_price - price) / state.entry_price * 100
+                    _trade_logger.info(
+                        "TRAIL %s %s | bar=%d | entry=%.6g | best=%.6g | sl=%.6g→%.6g | price=%.6g | pnl=%.2f%% | %s",
+                        state.direction, sym,
+                        state.bars_held, state.entry_price,
+                        state.best_price, old_sl, state.current_sl,
+                        price, unrealized,
+                        "ACTIVATED" if state.trailing_active and not old_trailing else "SL_MOVED",
+                    )
 
                 # check exit using REAL high/low
                 should_exit, reason, _ = self._trade_monitor.check_exit(
