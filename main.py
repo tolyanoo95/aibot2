@@ -284,10 +284,14 @@ class CryptoScanner:
             llm_reason.replace("\n", " ") if llm_reason else "—",
         )
 
-        # ── 1m entry refinement (for all non-NEUTRAL signals, enables accurate sim) ──
+        # ── 1m entry refinement ──
+        # Fast path: only refine signals that will actually trade (>= threshold)
+        # Slow path (logging only): refine all >= 50% + inverse AFTER trade decision
+        threshold = self.signal_gen.config.PREDICTION_THRESHOLD
+        _refine_params = None  # store for deferred logging
         if (
             signal.direction != "NEUTRAL"
-            and signal.confidence >= 0.50
+            and signal.confidence >= threshold
             and config.USE_1M_ENTRY
         ):
             refined = self.entry_refiner.refine(
@@ -307,21 +311,6 @@ class CryptoScanner:
                 signal.confidence * 100, ml_disagreement * 100,
                 signal.direction, regime,
             )
-            inv_dir = "SHORT" if signal.direction == "LONG" else "LONG"
-            refined_inv = self.entry_refiner.refine(
-                symbol=symbol,
-                direction=inv_dir,
-                signal_price=price,
-                atr_5m=atr,
-            )
-            _trade_logger.info(
-                "REFINED_INV %s | method=%s | orig=%.6g | entry=%.6g | sl=%.6g | tp=%.6g | atr=%.6g | improvement=%.3f%% | waited=%d bars | conf=%.1f%% | disagr=%.0f%% | dir=%s | regime=%s",
-                symbol, refined_inv.method, price,
-                refined_inv.entry_price, refined_inv.stop_loss, refined_inv.take_profit,
-                atr, refined_inv.improvement_pct, refined_inv.wait_bars,
-                signal.confidence * 100, ml_disagreement * 100,
-                inv_dir, regime,
-            )
             if refined.method != "MARKET":
                 signal.llm_reasoning = (
                     f"[1m {refined.method}: entry improved by "
@@ -329,6 +318,13 @@ class CryptoScanner:
                     f"waited {refined.wait_bars} bars] "
                     + signal.llm_reasoning
                 )
+        elif (
+            signal.direction != "NEUTRAL"
+            and signal.confidence >= 0.50
+            and config.USE_1M_ENTRY
+        ):
+            _refine_params = (symbol, signal.direction, price, atr,
+                              signal.confidence, ml_disagreement, regime)
 
         # ── track active signals ─────────────────────────────
         signal = self._track_signal(signal)
@@ -384,6 +380,45 @@ class CryptoScanner:
                     config.TRADING_MODE,
                     signal.llm_reasoning[:100],
                 )
+
+        # Deferred logging: refine + inverse for signals that didn't trade (50-79%)
+        # Runs AFTER trade decision — no delay on order execution
+        if _refine_params is not None:
+            try:
+                _sym, _dir, _price, _atr, _conf, _disagr, _reg = _refine_params
+                _ref = self.entry_refiner.refine(_sym, _dir, _price, _atr)
+                _trade_logger.info(
+                    "REFINED %s | method=%s | orig=%.6g | entry=%.6g | sl=%.6g | tp=%.6g | atr=%.6g | improvement=%.3f%% | waited=%d bars | conf=%.1f%% | disagr=%.0f%% | dir=%s | regime=%s",
+                    _sym, _ref.method, _price, _ref.entry_price, _ref.stop_loss, _ref.take_profit,
+                    _atr, _ref.improvement_pct, _ref.wait_bars, _conf * 100, _disagr * 100, _dir, _reg,
+                )
+                _inv_dir = "SHORT" if _dir == "LONG" else "LONG"
+                _ref_inv = self.entry_refiner.refine(_sym, _inv_dir, _price, _atr)
+                _trade_logger.info(
+                    "REFINED_INV %s | method=%s | orig=%.6g | entry=%.6g | sl=%.6g | tp=%.6g | atr=%.6g | improvement=%.3f%% | waited=%d bars | conf=%.1f%% | disagr=%.0f%% | dir=%s | regime=%s",
+                    _sym, _ref_inv.method, _price, _ref_inv.entry_price, _ref_inv.stop_loss, _ref_inv.take_profit,
+                    _atr, _ref_inv.improvement_pct, _ref_inv.wait_bars, _conf * 100, _disagr * 100, _inv_dir, _reg,
+                )
+            except Exception:
+                pass
+
+        # Inverse refined for signals >= threshold (deferred, after trade opened)
+        if (
+            signal.direction != "NEUTRAL"
+            and signal.confidence >= self.signal_gen.config.PREDICTION_THRESHOLD
+            and config.USE_1M_ENTRY
+            and _refine_params is None
+        ):
+            try:
+                inv_dir = "SHORT" if signal.direction == "LONG" else "LONG"
+                refined_inv = self.entry_refiner.refine(symbol, inv_dir, price, atr)
+                _trade_logger.info(
+                    "REFINED_INV %s | method=%s | orig=%.6g | entry=%.6g | sl=%.6g | tp=%.6g | atr=%.6g | improvement=%.3f%% | waited=%d bars | conf=%.1f%% | disagr=%.0f%% | dir=%s | regime=%s",
+                    symbol, refined_inv.method, price, refined_inv.entry_price, refined_inv.stop_loss, refined_inv.take_profit,
+                    atr, refined_inv.improvement_pct, refined_inv.wait_bars, signal.confidence * 100, ml_disagreement * 100, inv_dir, regime,
+                )
+            except Exception:
+                pass
 
         return signal
 
