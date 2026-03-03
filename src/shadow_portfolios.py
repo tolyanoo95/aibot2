@@ -399,7 +399,7 @@ class ShadowManager:
         self.portfolios: list[ShadowPortfolio] = []
         self.grid_portfolios: list[ShadowPortfolio] = []
         self._base_config = base_config
-        self._summary_interval = 60  # emit grid summary every N ticks
+        self._summary_interval = 12  # emit grid summary every N ticks (~1 hour)
         self._tick_count = 0
 
         # Load manual configs
