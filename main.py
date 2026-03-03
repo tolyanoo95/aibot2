@@ -675,6 +675,27 @@ class CryptoScanner:
             except Exception as exc:
                 _trade_logger.warning("1m check failed %s: %s", sym, exc)
 
+        # Log 1m candles for pairs with active signals (for simulation of hypothetical trades)
+        open_syms = set(self._open_trades.keys()) | closed_by_1m
+        for sig in signals:
+            if (
+                sig.symbol not in open_syms
+                and sig.direction != "NEUTRAL"
+                and sig.confidence >= 0.50
+            ):
+                try:
+                    df_1m = self.fetcher.fetch_ohlcv(sig.symbol, "1m", limit=6)
+                    if not df_1m.empty:
+                        for _, row in df_1m.iterrows():
+                            _trade_logger.info(
+                                "CANDLE_1M %s | ts=%s | open=%.6g | high=%.6g | low=%.6g | close=%.6g",
+                                sig.symbol,
+                                row.name.strftime('%Y-%m-%d %H:%M') if hasattr(row.name, 'strftime') else str(row.name),
+                                row['open'], row['high'], row['low'], row['close'],
+                            )
+                except Exception:
+                    pass
+
         for sig in signals:
             sym = sig.symbol
 
