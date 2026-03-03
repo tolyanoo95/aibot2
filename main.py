@@ -425,11 +425,12 @@ class CryptoScanner:
             except Exception:
                 pass
 
-        # Attach shadow data (pre-filter ML signal for shadow portfolios)
+        # Attach shadow data (use refined entry if available, pre-filter ML direction)
+        shadow_price = signal.entry_price if signal.direction != "NEUTRAL" else price
         signal._shadow = SignalData(
             symbol=symbol, ml_dir=_raw_dir, ml_conf=_raw_conf,
             ml_disagr=ml_disagreement, regime=regime,
-            price=price, high=high, low=low, close=price,
+            price=shadow_price, high=high, low=low, close=price,
             atr=atr, ml_signal=ml_sig,
         )
 
