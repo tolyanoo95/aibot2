@@ -288,7 +288,6 @@ class CryptoScanner:
         if (
             signal.direction != "NEUTRAL"
             and signal.confidence >= 0.50
-            and signal.age_bars <= 2
             and config.USE_1M_ENTRY
         ):
             refined = self.entry_refiner.refine(
