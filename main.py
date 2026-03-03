@@ -36,6 +36,7 @@ from src.executor import TradeExecutor
 from src.risk_manager import RiskManager
 from src.signal_generator import SignalGenerator
 from src.trade_monitor import TradeMonitor
+from src.shadow_portfolios import ShadowManager, SignalData
 
 # ── logging ──────────────────────────────────────────────────
 logging.basicConfig(
@@ -96,6 +97,7 @@ class CryptoScanner:
             config,
             exchange=self.fetcher.exchange if config.TRADING_MODE == "live" else None,
         )
+        self.shadow_manager = ShadowManager("shadow_configs.json", config)
 
     # ── single pair ──────────────────────────────────────────
 
@@ -422,6 +424,14 @@ class CryptoScanner:
                 )
             except Exception:
                 pass
+
+        # Attach shadow data (pre-filter ML signal for shadow portfolios)
+        signal._shadow = SignalData(
+            symbol=symbol, ml_dir=_raw_dir, ml_conf=_raw_conf,
+            ml_disagr=ml_disagreement, regime=regime,
+            price=price, high=high, low=low, close=price,
+            atr=atr, ml_signal=ml_sig,
+        )
 
         return signal
 
@@ -820,6 +830,28 @@ class CryptoScanner:
                                     "FLIP %s → %s %s @ %.6g (confidence=%.1f%%)",
                                     closed_direction, new_dir, sym, price, sig.confidence * 100,
                                 )
+
+        # Process shadow portfolios with same data
+        self._process_shadow_portfolios(signals)
+
+    def _process_shadow_portfolios(self, signals: list):
+        """Run all shadow portfolios with real signal data."""
+        if not self.shadow_manager.active:
+            return
+
+        shadow_signals = []
+        for sig in signals:
+            sd = getattr(sig, '_shadow', None)
+            if sd is not None:
+                sd.high = getattr(sig, 'candle_high', sd.price)
+                sd.low = getattr(sig, 'candle_low', sd.price)
+                sd.close = sd.price
+                shadow_signals.append(sd)
+
+        if shadow_signals:
+            self.shadow_manager.process_signals(shadow_signals)
+            for line in self.shadow_manager.flush_all_logs():
+                _trade_logger.info(line)
 
     # ── main loop ────────────────────────────────────────────
 

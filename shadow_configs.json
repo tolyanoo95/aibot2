@@ -1,0 +1,74 @@
+[
+  {
+    "name": "mirror",
+    "comment": "Exact copy of current .env config — should match paper_trades perfectly"
+  },
+  {
+    "name": "conf75",
+    "threshold": 0.75,
+    "comment": "Lower threshold: more trades, more SHORT signals pass"
+  },
+  {
+    "name": "conf60",
+    "threshold": 0.60,
+    "comment": "Aggressive threshold: many more trades"
+  },
+  {
+    "name": "tp2.0",
+    "tp_atr": 2.0,
+    "comment": "Closer TP — easier to reach, higher WR but smaller wins"
+  },
+  {
+    "name": "tp1.5",
+    "tp_atr": 1.5,
+    "comment": "Tight TP — very close, high WR"
+  },
+  {
+    "name": "trail2.5",
+    "trail_activation": 2.5,
+    "trail_distance": 1.5,
+    "comment": "Wider trailing — gives price more room"
+  },
+  {
+    "name": "no_dead",
+    "dead_hours": [],
+    "comment": "No dead hours filter — trade 24/7"
+  },
+  {
+    "name": "no_trail",
+    "trail_enabled": false,
+    "comment": "Trailing SL disabled — only fixed SL/TP"
+  },
+  {
+    "name": "max4",
+    "max_open": 4,
+    "comment": "4 positions at once instead of 2"
+  },
+  {
+    "name": "skipL_REV",
+    "skip_regimes": [["LONG", "REVERSAL"]],
+    "comment": "Skip LONG trades during REVERSAL regime"
+  },
+  {
+    "name": "range_tp1.5",
+    "regime_tp": {"RANGE": 1.5},
+    "comment": "Tighter TP only in RANGE regime"
+  },
+  {
+    "name": "inverse",
+    "inverse": true,
+    "comment": "Inverse trading — flip ML direction"
+  },
+  {
+    "name": "exit_close",
+    "exit_mode": "close",
+    "comment": "Check SL/TP by close price only, not high/low"
+  },
+  {
+    "name": "best_combo",
+    "threshold": 0.75,
+    "trail_activation": 2.0,
+    "skip_regimes": [["LONG", "REVERSAL"]],
+    "comment": "Best combo from previous simulations"
+  }
+]
