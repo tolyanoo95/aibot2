@@ -287,8 +287,11 @@ class CryptoScanner:
         # ── 1m entry refinement ──
         # Fast path: only refine signals that will actually trade (>= threshold)
         # Slow path (logging only): refine all >= 50% + inverse AFTER trade decision
+        # Use ml_only_dir (pre-filter direction) so filtered signals still get logged
         threshold = self.signal_gen.config.PREDICTION_THRESHOLD
         _refine_params = None  # store for deferred logging
+        _raw_dir = ml_only_dir  # original ML direction before any filter
+        _raw_conf = ml_conf_pct / 100  # original ML confidence
         if (
             signal.direction != "NEUTRAL"
             and signal.confidence >= threshold
@@ -319,12 +322,12 @@ class CryptoScanner:
                     + signal.llm_reasoning
                 )
         elif (
-            signal.direction != "NEUTRAL"
-            and signal.confidence >= 0.50
+            _raw_dir != "NEUTRAL"
+            and _raw_conf >= 0.50
             and config.USE_1M_ENTRY
         ):
-            _refine_params = (symbol, signal.direction, price, atr,
-                              signal.confidence, ml_disagreement, regime)
+            _refine_params = (symbol, _raw_dir, price, atr,
+                              _raw_conf, ml_disagreement, regime)
 
         # ── track active signals ─────────────────────────────
         signal = self._track_signal(signal)
@@ -676,12 +679,13 @@ class CryptoScanner:
                 _trade_logger.warning("1m check failed %s: %s", sym, exc)
 
         # Log 1m candles for pairs with active signals (for simulation of hypothetical trades)
+        # Use ml_signal (pre-filter) so filtered signals (dead hours etc.) still get 1m data
         open_syms = set(self._open_trades.keys()) | closed_by_1m
         for sig in signals:
             if (
                 sig.symbol not in open_syms
-                and sig.direction != "NEUTRAL"
-                and sig.confidence >= 0.50
+                and getattr(sig, 'ml_signal', 0) != 0
+                and getattr(sig, 'ml_confidence', 0) >= 0.50
             ):
                 try:
                     df_1m = self.fetcher.fetch_ohlcv(sig.symbol, "1m", limit=6)
