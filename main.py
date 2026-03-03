@@ -546,22 +546,106 @@ class CryptoScanner:
                     del self._open_trades[sym]
                 return
 
-        # Log 1m candles for open trades (enables precise simulation)
+        # Fetch 1m candles for open trades: log + check SL/TP with 1-min precision
+        closed_by_1m = set()
         for sym in list(self._open_trades.keys()):
             try:
                 df_1m = self.fetcher.fetch_ohlcv(sym, "1m", limit=6)
-                if not df_1m.empty:
-                    for _, row in df_1m.iterrows():
-                        _trade_logger.info(
-                            "CANDLE_1M %s | ts=%s | open=%.6g | high=%.6g | low=%.6g | close=%.6g",
-                            sym, row.name.strftime('%Y-%m-%d %H:%M') if hasattr(row.name, 'strftime') else str(row.name),
-                            row['open'], row['high'], row['low'], row['close'],
-                        )
+                if df_1m.empty:
+                    continue
+                state = self._open_trades[sym]
+                atr = getattr(state, '_last_atr', 0)
+
+                for _, row in df_1m.iterrows():
+                    h1 = float(row['high'])
+                    l1 = float(row['low'])
+                    c1 = float(row['close'])
+                    ts_1m = row.name.strftime('%Y-%m-%d %H:%M') if hasattr(row.name, 'strftime') else str(row.name)
+                    _trade_logger.info(
+                        "CANDLE_1M %s | ts=%s | open=%.6g | high=%.6g | low=%.6g | close=%.6g",
+                        sym, ts_1m, row['open'], h1, l1, c1,
+                    )
+
+                    # Update best price from 1m data
+                    if state.direction == "LONG":
+                        state.best_price = max(state.best_price, h1)
+                    else:
+                        state.best_price = min(state.best_price, l1)
+
+                    # Check TP on 1m
+                    if state.direction == "LONG" and h1 >= state.original_tp:
+                        result = self.executor.close_trade(sym, c1, "TP")
+                        if result:
+                            _trade_logger.info(
+                                "CLOSE %s %s | entry=%.6g | exit=%.6g | "
+                                "reason=TP | pnl=%.2f%% | bars=%d | 1m_exit=%s",
+                                state.direction, sym, state.entry_price, c1,
+                                result.get("pnl_pct", 0), state.bars_held, ts_1m,
+                            )
+                        closed_by_1m.add(sym)
+                        break
+                    if state.direction == "SHORT" and l1 <= state.original_tp:
+                        result = self.executor.close_trade(sym, c1, "TP")
+                        if result:
+                            _trade_logger.info(
+                                "CLOSE %s %s | entry=%.6g | exit=%.6g | "
+                                "reason=TP | pnl=%.2f%% | bars=%d | 1m_exit=%s",
+                                state.direction, sym, state.entry_price, c1,
+                                result.get("pnl_pct", 0), state.bars_held, ts_1m,
+                            )
+                        closed_by_1m.add(sym)
+                        break
+
+                    # Check SL on 1m
+                    if state.direction == "LONG" and l1 <= state.current_sl:
+                        reason = "TRAIL_SL" if state.trailing_active else "SL"
+                        result = self.executor.close_trade(sym, c1, reason)
+                        if result:
+                            _trade_logger.info(
+                                "CLOSE %s %s | entry=%.6g | exit=%.6g | "
+                                "reason=%s | pnl=%.2f%% | bars=%d | 1m_exit=%s",
+                                state.direction, sym, state.entry_price, c1,
+                                reason, result.get("pnl_pct", 0), state.bars_held, ts_1m,
+                            )
+                        closed_by_1m.add(sym)
+                        break
+                    if state.direction == "SHORT" and h1 >= state.current_sl:
+                        reason = "TRAIL_SL" if state.trailing_active else "SL"
+                        result = self.executor.close_trade(sym, c1, reason)
+                        if result:
+                            _trade_logger.info(
+                                "CLOSE %s %s | entry=%.6g | exit=%.6g | "
+                                "reason=%s | pnl=%.2f%% | bars=%d | 1m_exit=%s",
+                                state.direction, sym, state.entry_price, c1,
+                                reason, result.get("pnl_pct", 0), state.bars_held, ts_1m,
+                            )
+                        closed_by_1m.add(sym)
+                        break
+
+                if sym in closed_by_1m:
+                    del self._open_trades[sym]
+                    if sym in self._active_signals:
+                        del self._active_signals[sym]
+                    self._closed_cooldown[sym] = int(os.getenv("COOLDOWN_BARS", "4"))
+                    pnl_pct = result.get("pnl_pct", 0) if result else 0
+                    if reason in ("STOP_LOSS", "SL") or pnl_pct < -0.2:
+                        self._consecutive_sl += 1
+                        self._pair_sl_cooldown[sym] = 8
+                        if self._consecutive_sl >= 3:
+                            self._global_pause = 24
+                            _trade_logger.info("PAUSE | %d consecutive SL", self._consecutive_sl)
+                    else:
+                        self._consecutive_sl = 0
+
             except Exception as exc:
-                _trade_logger.warning("1m fetch failed %s: %s", sym, exc)
+                _trade_logger.warning("1m check failed %s: %s", sym, exc)
 
         for sig in signals:
             sym = sig.symbol
+
+            # Skip if already closed by 1m check above
+            if sym in closed_by_1m:
+                continue
 
             # update existing trades with REAL candle high/low
             if sym in self._open_trades:
