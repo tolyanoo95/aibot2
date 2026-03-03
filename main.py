@@ -546,6 +546,20 @@ class CryptoScanner:
                     del self._open_trades[sym]
                 return
 
+        # Log 1m candles for open trades (enables precise simulation)
+        for sym in list(self._open_trades.keys()):
+            try:
+                df_1m = self.fetcher.fetch_ohlcv(sym, "1m", limit=6)
+                if not df_1m.empty:
+                    for _, row in df_1m.iterrows():
+                        _trade_logger.info(
+                            "CANDLE_1M %s | ts=%s | open=%.6g | high=%.6g | low=%.6g | close=%.6g",
+                            sym, row.name.strftime('%Y-%m-%d %H:%M') if hasattr(row.name, 'strftime') else str(row.name),
+                            row['open'], row['high'], row['low'], row['close'],
+                        )
+            except Exception as exc:
+                _trade_logger.warning("1m fetch failed %s: %s", sym, exc)
+
         for sig in signals:
             sym = sig.symbol
 
