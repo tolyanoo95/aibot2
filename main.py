@@ -36,7 +36,7 @@ from src.executor import TradeExecutor
 from src.risk_manager import RiskManager
 from src.signal_generator import SignalGenerator
 from src.trade_monitor import TradeMonitor
-from src.shadow_portfolios import ShadowManager, SignalData
+from src.shadow_portfolios import ShadowAnalyzer
 
 # ── logging ──────────────────────────────────────────────────
 logging.basicConfig(
@@ -97,7 +97,8 @@ class CryptoScanner:
             config,
             exchange=self.fetcher.exchange if config.TRADING_MODE == "live" else None,
         )
-        self.shadow_manager = ShadowManager("shadow_configs.json", config)
+        self.shadow = ShadowAnalyzer("shadow_configs.json", config)
+        self._trade_history: dict[str, list] = {}  # sym → list of bar data for shadow close analysis
 
     # ── single pair ──────────────────────────────────────────
 
@@ -385,6 +386,14 @@ class CryptoScanner:
                     config.TRADING_MODE,
                     signal.llm_reasoning[:100],
                 )
+                self._trade_history[symbol] = []
+
+                for line in self.shadow.check_open(
+                    symbol, signal.direction, signal.confidence,
+                    regime, atr, signal.entry_price,
+                    ml_disagreement, threshold,
+                ):
+                    _trade_logger.info(line)
 
         # Deferred logging: refine + inverse for signals that didn't trade (50-79%)
         # Runs AFTER trade decision — no delay on order execution
@@ -424,15 +433,6 @@ class CryptoScanner:
                 )
             except Exception:
                 pass
-
-        # Attach shadow data (use refined entry if available, pre-filter ML direction)
-        shadow_price = signal.entry_price if signal.direction != "NEUTRAL" else price
-        signal._shadow = SignalData(
-            symbol=symbol, ml_dir=_raw_dir, ml_conf=_raw_conf,
-            ml_disagr=ml_disagreement, regime=regime,
-            price=shadow_price, high=high, low=low, close=price,
-            atr=atr, ml_signal=ml_sig,
-        )
 
         return signal
 
@@ -672,11 +672,18 @@ class CryptoScanner:
                         break
 
                 if sym in closed_by_1m:
+                    pnl_pct = result.get("pnl_pct", 0) if result else 0
+                    history = self._trade_history.pop(sym, [])
+                    last_atr = history[-1]['atr'] if history else 0
+                    for line in self.shadow.check_close(
+                        sym, state.direction, state.entry_price,
+                        last_atr, reason, pnl_pct, state.bars_held, history,
+                    ):
+                        _trade_logger.info(line)
                     del self._open_trades[sym]
                     if sym in self._active_signals:
                         del self._active_signals[sym]
                     self._closed_cooldown[sym] = int(os.getenv("COOLDOWN_BARS", "4"))
-                    pnl_pct = result.get("pnl_pct", 0) if result else 0
                     if reason in ("STOP_LOSS", "SL") or pnl_pct < -0.2:
                         self._consecutive_sl += 1
                         self._pair_sl_cooldown[sym] = 8
@@ -744,6 +751,12 @@ class CryptoScanner:
                 )
                 self._open_trades[sym] = state
 
+                # Record bar data for shadow close analysis
+                if sym in self._trade_history:
+                    self._trade_history[sym].append({
+                        'high': high, 'low': low, 'close': price, 'atr': atr,
+                    })
+
                 if state.current_sl != old_sl or (state.trailing_active and not old_trailing):
                     if state.direction == "LONG":
                         unrealized = (price - state.entry_price) / state.entry_price * 100
@@ -779,6 +792,15 @@ class CryptoScanner:
                             state.health,
                             state.health_reason,
                         )
+                    # Shadow close analysis
+                    pnl_pct = result.get("pnl_pct", 0) if result else 0
+                    history = self._trade_history.pop(sym, [])
+                    for line in self.shadow.check_close(
+                        sym, state.direction, state.entry_price,
+                        atr, reason, pnl_pct, state.bars_held, history,
+                    ):
+                        _trade_logger.info(line)
+
                     del self._open_trades[sym]
                     # reset signal tracking so bot can re-enter after cooldown
                     if sym in self._active_signals:
@@ -786,7 +808,6 @@ class CryptoScanner:
                     self._closed_cooldown[sym] = int(os.getenv("COOLDOWN_BARS", "4"))
 
                     # track consecutive SL for reversal protection
-                    pnl_pct = result.get("pnl_pct", 0) if result else 0
                     if reason in ("STOP_LOSS", "SL") or pnl_pct < -0.2:
                         self._consecutive_sl += 1
                         self._pair_sl_cooldown[sym] = 8  # 40 min cooldown on this pair
@@ -832,27 +853,9 @@ class CryptoScanner:
                                     closed_direction, new_dir, sym, price, sig.confidence * 100,
                                 )
 
-        # Process shadow portfolios with same data
-        self._process_shadow_portfolios(signals)
-
-    def _process_shadow_portfolios(self, signals: list):
-        """Run all shadow portfolios with real signal data."""
-        if not self.shadow_manager.active:
-            return
-
-        shadow_signals = []
-        for sig in signals:
-            sd = getattr(sig, '_shadow', None)
-            if sd is not None:
-                sd.high = getattr(sig, 'candle_high', sd.price)
-                sd.low = getattr(sig, 'candle_low', sd.price)
-                sd.close = sd.price
-                shadow_signals.append(sd)
-
-        if shadow_signals:
-            self.shadow_manager.process_signals(shadow_signals)
-            for line in self.shadow_manager.flush_all_logs():
-                _trade_logger.info(line)
+        # Grid search summary tick
+        for line in self.shadow.tick():
+            _trade_logger.info(line)
 
     # ── main loop ────────────────────────────────────────────
 
