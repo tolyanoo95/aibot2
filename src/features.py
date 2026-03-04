@@ -70,6 +70,15 @@ class FeatureEngineer:
         "day_of_week",
         "session",
         "is_weekend",
+        # reversal / exhaustion detection (V-bottom / V-top)
+        "roc_deceleration",
+        "volume_climax",
+        "lower_wick_ratio",
+        "dist_from_high_20",
+        "dist_from_low_20",
+        "consecutive_candles",
+        "bb_lower_dist",
+        "bb_upper_dist",
     ]
 
     # Reversal-specific features
@@ -210,6 +219,34 @@ class FeatureEngineer:
             default=3,
         )
         feat["is_weekend"] = (dow >= 5).astype(float)
+
+        # ── Reversal / exhaustion detection (V-bottom / V-top) ──
+        # Momentum deceleration: positive = drop is slowing, negative = rally fading
+        feat["roc_deceleration"] = feat.get("roc_1", 0) - feat.get("roc_3", 0)
+
+        # Volume climax: extreme volume = capitulation / blow-off top
+        vol_sma20 = feat["volume"].rolling(20).mean()
+        feat["volume_climax"] = np.where(vol_sma20 > 0, feat["volume"] / vol_sma20, 1.0)
+
+        # Lower wick ratio: large lower wick = strong buying at lows
+        total_candle = feat["high"] - feat["low"]
+        lower_w = feat[["close", "open"]].min(axis=1) - feat["low"]
+        feat["lower_wick_ratio"] = np.where(total_candle > 0, lower_w / total_candle, 0.0)
+
+        # Distance from rolling 20-bar (100 min) high/low
+        feat["dist_from_high_20"] = (
+            (feat["close"] - feat["high"].rolling(20).max()) / feat["close"] * 100
+        )
+        feat["dist_from_low_20"] = (
+            (feat["close"] - feat["low"].rolling(20).min()) / feat["close"] * 100
+        )
+
+        # BB band distances (moved here so Trend model can use them too)
+        if "BBU_20_2.0" in feat.columns and "BBL_20_2.0" in feat.columns:
+            if "bb_upper_dist" not in feat.columns:
+                feat["bb_upper_dist"] = (feat["BBU_20_2.0"] - feat["close"]) / feat["close"] * 100
+            if "bb_lower_dist" not in feat.columns:
+                feat["bb_lower_dist"] = (feat["close"] - feat["BBL_20_2.0"]) / feat["close"] * 100
 
         # ── Reversal detection features ────────────────────────
         # Multi-timeframe RSI divergence (price vs RSI direction mismatch)
