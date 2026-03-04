@@ -167,6 +167,30 @@ class CryptoScanner:
         else:
             ml_result = self.ml_model.predict(X)
 
+        # ── All 3 models in parallel (for analysis) ──────────
+        _all_models = {}
+        try:
+            _t = self.ml_model.predict(X)
+            _all_models['trend'] = {1: "BUY", -1: "SELL", 0: "HOLD"}.get(_t.get("signal", 0), "?") + f"({_t.get('confidence', 0)*100:.0f}%)"
+        except Exception:
+            _all_models['trend'] = "ERR"
+        try:
+            if self.reversal_model.is_trained:
+                _r = self.reversal_model.predict(X)
+                _all_models['reversal'] = {1: "BUY", -1: "SELL", 0: "HOLD"}.get(_r.get("signal", 0), "?") + f"({_r.get('confidence', 0)*100:.0f}%)"
+            else:
+                _all_models['reversal'] = "N/A"
+        except Exception:
+            _all_models['reversal'] = "ERR"
+        try:
+            if self.range_model.is_trained:
+                _rng = self.range_model.predict(X)
+                _all_models['range'] = {1: "BUY", -1: "SELL", 0: "HOLD"}.get(_rng.get("signal", 0), "?") + f"({_rng.get('confidence', 0)*100:.0f}%)"
+            else:
+                _all_models['range'] = "N/A"
+        except Exception:
+            _all_models['range'] = "ERR"
+
         # ── LLM analysis (rate-limited, with full context) ───
         llm_result = self._get_llm(symbol, data, ctx)
 
@@ -256,7 +280,7 @@ class CryptoScanner:
             "comb_inv=%s sl=%.6g tp=%.6g | "
             "filter=%s | status=%s | age=%d | regime=%s | "
             "rsi=%.1f | roc1=%.2f | roc3=%.2f | atr_exp=%.2f | oi_chg=%.2f | "
-            "funding=%.6f | ls_ratio=%.2f | llm_reason=%s",
+            "funding=%.6f | ls_ratio=%.2f | models=T:%s R:%s Rng:%s | llm_reason=%s",
             symbol, price, candle_open, high, low, atr, volume_ratio, adx, ob_imbalance,
             {1: "BUY", -1: "SELL", 0: "HOLD"}.get(ml_sig, "?"),
             ml_conf_pct,
@@ -284,6 +308,7 @@ class CryptoScanner:
             float(last_row.get("oi_change_pct", 0)) if pd.notna(last_row.get("oi_change_pct")) else 0,
             ctx.get("funding_rate", 0) if isinstance(ctx.get("funding_rate"), (int, float)) else 0,
             ctx.get("long_short_ratio", 0),
+            _all_models.get('trend', '?'), _all_models.get('reversal', '?'), _all_models.get('range', '?'),
             llm_reason.replace("\n", " ") if llm_reason else "—",
         )
 
