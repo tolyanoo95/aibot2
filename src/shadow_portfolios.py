@@ -29,6 +29,7 @@ class ShadowTrade:
     open_time: datetime
     bars_held: int = 0
     trailing_active: bool = False
+    health: str = "HEALTHY"
 
 
 @dataclass
@@ -62,6 +63,7 @@ class ShadowPortfolio:
         self.global_pause: int = 0
         self._tick: int = 0
         self._log_buffer: list[str] = []
+        self._active_signals: dict[str, str] = {}  # sym → direction (signal tracking)
 
         self.total_trades = 0
         self.total_wins = 0
@@ -251,6 +253,22 @@ class ShadowPortfolio:
 
         trade.bars_held += 1
 
+        # EARLY_EXIT: ML reversed with strong confidence (matches real bot logic)
+        if sig.ml_conf >= 0.65 and trade.bars_held >= 3:
+            ml_reversed = False
+            if trade.direction == 'LONG' and sig.ml_signal == -1:
+                ml_reversed = True
+            elif trade.direction == 'SHORT' and sig.ml_signal == 1:
+                ml_reversed = True
+            if ml_reversed:
+                trade.health = "CLOSE_EARLY"
+                if trade.direction == 'LONG':
+                    pnl = (sig.close - trade.entry_price) / trade.entry_price * 100 - COMMISSION_PCT
+                else:
+                    pnl = (trade.entry_price - sig.close) / trade.entry_price * 100 - COMMISSION_PCT
+                self._close_trade(trade, 'EARLY_EXIT', pnl)
+                return
+
         # TIMEOUT
         if trade.bars_held >= self.timeout:
             if trade.direction == 'LONG':
@@ -261,6 +279,8 @@ class ShadowPortfolio:
 
     def _try_open(self, sig: SignalData, threshold: float):
         if sig.ml_dir == 'NEUTRAL':
+            # Signal gone — clear tracking
+            self._active_signals.pop(sig.symbol, None)
             return
 
         direction = sig.ml_dir
@@ -277,9 +297,6 @@ class ShadowPortfolio:
         if (direction, sig.regime) in self._skip_regimes():
             return
 
-        if self.use_fresh and sig.ml_conf < 0.50:
-            return
-
         eff_conf = sig.ml_conf
         if sig.ml_disagr >= 0.5:
             eff_conf *= 0.60
@@ -288,6 +305,12 @@ class ShadowPortfolio:
 
         if eff_conf < threshold:
             return
+
+        # Signal tracking: only open on NEW signals, not repeated ones
+        prev = self._active_signals.get(sig.symbol)
+        if prev == direction:
+            return  # same signal already seen, don't re-open
+        self._active_signals[sig.symbol] = direction
 
         sl_dist, tp_dist = self._sl_tp_for_regime(sig.regime, sig.atr)
 
@@ -324,6 +347,7 @@ class ShadowPortfolio:
 
     def _close_trade(self, trade: ShadowTrade, reason: str, pnl: float):
         del self.open_trades[trade.symbol]
+        self._active_signals.pop(trade.symbol, None)
         self.pair_cooldown[trade.symbol] = self.cooldown
 
         is_loss = reason == 'SL' or pnl < -0.2
