@@ -31,6 +31,7 @@ from src.ml_model import MLSignalModel
 from src.regime_classifier import RegimeClassifier
 from src.reversal_model import ReversalModel
 from src.range_model import RangeModel
+from src.trend_health_model import TrendHealthModel
 from src.entry_refiner import EntryRefiner
 from src.executor import TradeExecutor
 from src.risk_manager import RiskManager
@@ -73,6 +74,7 @@ class CryptoScanner:
         self.regime_clf = RegimeClassifier("models/regime_model.pkl")
         self.reversal_model = ReversalModel("models/reversal_model.pkl")
         self.range_model = RangeModel("models/range_model.pkl")
+        self.health_model = TrendHealthModel("models/trend_health_model.pkl")
         self.llm = LLMAnalyzer(config) if config.USE_LLM else None
         self.market_ctx = MarketContext(config)
         self.signal_gen = SignalGenerator(config)
@@ -213,6 +215,17 @@ class CryptoScanner:
         # Previously had per-regime SL/TP but grid search showed
         # fixed SL=1.0 TP=3.0 works best across all regimes
 
+        # ── Trend Health check ───────────────────────────────────
+        _health_ending = False
+        if self.health_model.is_trained:
+            _health = self.health_model.predict(X)
+            _health_ending = _health.get("is_ending", False) and _health.get("ending_confidence", 0) > 0.70
+            if _health_ending:
+                ml_result["confidence"] *= 0.5
+                logger.info("%s TrendHealth: ENDING (conf=%.0f%%), halved ML conf → %.1f%%",
+                            symbol, _health.get("ending_confidence", 0) * 100,
+                            ml_result["confidence"] * 100)
+
         # Extract exhaustion features for guard
         _last_feat = X.iloc[-1]
         _guard_features = {
@@ -220,7 +233,9 @@ class CryptoScanner:
             "dist_from_low_96": float(_last_feat.get("dist_from_low_96", 0)),
             "dist_from_high_288": float(_last_feat.get("dist_from_high_288", 0)),
             "dist_from_low_288": float(_last_feat.get("dist_from_low_288", 0)),
+            "max_drawdown_48h": float(_last_feat.get("max_drawdown_48h", 0)),
             "roc_deceleration": float(_last_feat.get("roc_deceleration", 0)),
+            "trend_health_ending": _health_ending,
         }
 
         signal = self.signal_gen.generate(

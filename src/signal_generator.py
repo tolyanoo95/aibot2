@@ -212,27 +212,36 @@ class SignalGenerator:
     @staticmethod
     def _exhaustion_guard(direction: str, features: dict) -> str:
         """Block trades when price is at exhaustion extremes.
-        Uses two windows: 8h (96 bars) for immediate V-bottom detection,
-        24h (288 bars) for recovery phase protection.
+        Three layers: 8h V-bottom, 24h post-crash, 48h max-drawdown.
         Returns reason string if blocked, empty string if OK."""
         dist_high_96 = features.get("dist_from_high_96", 0)
         dist_low_96 = features.get("dist_from_low_96", 0)
         dist_high_288 = features.get("dist_from_high_288", 0)
         dist_low_288 = features.get("dist_from_low_288", 0)
+        max_dd_48h = features.get("max_drawdown_48h", 0)
         roc_decel = features.get("roc_deceleration", 0)
+        trend_health = features.get("trend_health_ending", False)
 
         if direction == "SHORT":
-            # 8h window: V-bottom (price crashed, drop slowing)
+            # Layer 1: 8h V-bottom (drop slowing)
             if dist_high_96 < -3.0 and roc_decel > 0:
                 return (
                     f"V-bottom 8h (price {dist_high_96:.1f}% from 8h high, "
                     f"roc_d={roc_decel:+.2f})"
                 )
-            # 24h window: major crash happened — don't short regardless of momentum
+            # Layer 2: 24h post-crash
             if dist_high_288 < -2.0:
                 return (
                     f"Post-crash 24h (price {dist_high_288:.1f}% from 24h high)"
                 )
+            # Layer 3: 48h max drawdown — crash happened recently even if price recovered
+            if max_dd_48h < -5.0:
+                return (
+                    f"Major crash 48h (max drawdown {max_dd_48h:.1f}% in last 48h)"
+                )
+            # Layer 4: Trend Health model says trend is ending
+            if trend_health:
+                return "Trend Health: trend ending"
 
         if direction == "LONG":
             if dist_low_96 > 3.0 and roc_decel < 0:
@@ -240,11 +249,14 @@ class SignalGenerator:
                     f"Blow-off top 8h (price {dist_low_96:.1f}% from 8h low, "
                     f"roc_d={roc_decel:+.2f})"
                 )
-            # 24h window: major pump happened — don't long regardless of momentum
             if dist_low_288 > 2.0:
                 return (
                     f"Post-pump 24h (price {dist_low_288:.1f}% from 24h low)"
                 )
+            if max_dd_48h > 0 and -max_dd_48h < -5.0:
+                pass  # max_drawdown is always negative, pump is handled by dist_low
+            if trend_health:
+                return "Trend Health: trend ending"
 
         return ""
 

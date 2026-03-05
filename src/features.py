@@ -86,6 +86,7 @@ class FeatureEngineer:
         "bb_upper_dist",
         "bullish_volume",
         "bearish_volume",
+        "max_drawdown_48h",
     ]
 
     # Reversal-specific features
@@ -264,6 +265,15 @@ class FeatureEngineer:
         )
         feat["dist_from_low_288"] = (
             (feat["close"] - feat["low"].rolling(288).min()) / feat["close"] * 100
+        )
+
+        # Max drawdown in 48h (576 bars) — remembers crash magnitude during recovery
+        rolling_peak_576 = feat["high"].rolling(576).max()
+        rolling_trough_576 = feat["low"].rolling(576).min()
+        feat["max_drawdown_48h"] = np.where(
+            rolling_peak_576 > 0,
+            (rolling_trough_576 - rolling_peak_576) / rolling_peak_576 * 100,
+            0.0,
         )
 
         # BB band distances — compute from raw price, no dependency on pandas_ta column names
@@ -699,6 +709,46 @@ class FeatureEngineer:
             # RANGE: small total range
             elif total_range < range_threshold:
                 labels.iloc[i] = 0  # RANGE (default)
+
+        return labels
+
+    # ── trend health labeling ─────────────────────────────────
+
+    @staticmethod
+    def create_health_labels(
+        df: pd.DataFrame,
+        max_bars: int = 18,
+        reversal_pct: float = 1.0,
+    ) -> pd.Series:
+        """
+        Label each bar as HEALTHY (1) or ENDING (0).
+
+        For each bar, check if the current trend (roc_12 direction) reverses
+        by more than reversal_pct% within the next max_bars bars.
+        If it reverses → ENDING (0), otherwise → HEALTHY (1).
+        """
+        labels = pd.Series(1, index=df.index, dtype=int)
+        close = df["close"].values
+        roc_12 = df["roc_12"].values if "roc_12" in df.columns else (
+            pd.Series(close).pct_change(12).values * 100
+        )
+
+        n = len(df)
+        for i in range(n - max_bars):
+            if np.isnan(roc_12[i]):
+                continue
+            trend_dir = 1 if roc_12[i] > 0 else -1
+            for j in range(1, max_bars + 1):
+                idx = i + j
+                if idx >= n:
+                    break
+                move = (close[idx] - close[i]) / close[i] * 100
+                if trend_dir > 0 and move < -reversal_pct:
+                    labels.iloc[i] = 0
+                    break
+                if trend_dir < 0 and move > reversal_pct:
+                    labels.iloc[i] = 0
+                    break
 
         return labels
 
