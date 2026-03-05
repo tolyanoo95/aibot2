@@ -24,3 +24,6 @@ logs_archive/
 
 # OS
 .DS_Store
+ensemble_*.cbm
+ensemble_*.pkl
+ensemble_*.json

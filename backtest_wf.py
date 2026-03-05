@@ -276,18 +276,23 @@ def run_walk_forward(
         console.print(f"  Trained on {len(X_train)} samples (B:{n_buy} S:{n_sell} H:{n_hold})")
 
         # Test on out-of-sample data
+        # Compute features on ALL data up to test_end (so rolling windows have full lookback)
         fold_trades = []
         for symbol, df_full in all_pair_data.items():
             if len(df_full) < test_end:
                 continue
-            df_test = df_full.iloc[train_end:test_end].copy()
-            if len(df_test) < 50:
-                continue
 
-            feat = fe.create_features(df_test)
-            feat = fe.add_rolling_htf_features(feat)
-            cols = fe.get_feature_columns(feat, model_type="trend")
-            X = feat[cols].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
+            df_with_lookback = df_full.iloc[:test_end].copy()
+            feat_all = fe.create_features(df_with_lookback)
+            feat_all = fe.add_rolling_htf_features(feat_all)
+            cols = fe.get_feature_columns(feat_all, model_type="trend")
+            X_all_feat = feat_all[cols].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
+
+            # Slice only test window for signals (but features had full lookback)
+            X = X_all_feat.iloc[train_end:test_end]
+            df_test = df_with_lookback.iloc[train_end:test_end]
+            if len(X) < 50:
+                continue
 
             # Generate signals
             signals = []
@@ -300,18 +305,28 @@ def run_walk_forward(
                 if conf > 0.90:
                     conf = 0.85
 
+                # Dead hours check using bar time (not datetime.now)
+                bar_time = df_test.index[j]
+                bar_hour = bar_time.hour if hasattr(bar_time, 'hour') else 0
+                dead_hours = config.FILTER_DEAD_HOURS
+                if dead_hours and bar_hour in dead_hours:
+                    direction = "NEUTRAL"
+                    conf *= 0.3
+                else:
+                    direction = "SHORT" if sig_val == -1 else ("LONG" if sig_val == 1 else "NEUTRAL")
+
                 # Exhaustion guard check
                 row = X.iloc[j]
                 guard_feats = {k: float(row.get(k, 0)) for k in [
                     "dist_from_high_96", "dist_from_low_96",
                     "dist_from_high_288", "dist_from_low_288",
                     "max_drawdown_48h", "roc_deceleration"]}
-                direction = "SHORT" if sig_val == -1 else ("LONG" if sig_val == 1 else "NEUTRAL")
 
-                guard = sig_gen._exhaustion_guard(direction, guard_feats)
-                if guard:
-                    direction = "NEUTRAL"
-                    conf *= 0.3
+                if direction != "NEUTRAL":
+                    guard = sig_gen._exhaustion_guard(direction, guard_feats)
+                    if guard:
+                        direction = "NEUTRAL"
+                        conf *= 0.3
 
                 signals.append({
                     "bar_idx": j,

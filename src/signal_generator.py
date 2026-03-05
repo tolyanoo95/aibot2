@@ -243,8 +243,8 @@ class SignalGenerator:
                 return (
                     f"Post-crash 24h (price {dist_high_288:.1f}% from 24h high)"
                 )
-            # Layer 3: 48h max drawdown — crash happened recently even if price recovered
-            if max_dd_48h < -5.0:
+            # Layer 3: 48h max drawdown — real crash (not normal volatility)
+            if max_dd_48h < -10.0:
                 return (
                     f"Major crash 48h (max drawdown {max_dd_48h:.1f}% in last 48h)"
                 )
