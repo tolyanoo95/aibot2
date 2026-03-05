@@ -72,13 +72,18 @@ class FeatureEngineer:
         "is_weekend",
         # reversal / exhaustion detection (V-bottom / V-top)
         "roc_deceleration",
+        "roc_deceleration_12",
         "volume_climax",
         "lower_wick_ratio",
         "dist_from_high_20",
         "dist_from_low_20",
+        "dist_from_high_96",
+        "dist_from_low_96",
         "consecutive_candles",
         "bb_lower_dist",
         "bb_upper_dist",
+        "bullish_volume",
+        "bearish_volume",
     ]
 
     # Reversal-specific features
@@ -221,32 +226,51 @@ class FeatureEngineer:
         feat["is_weekend"] = (dow >= 5).astype(float)
 
         # ── Reversal / exhaustion detection (V-bottom / V-top) ──
-        # Momentum deceleration: positive = drop is slowing, negative = rally fading
+
+        # Momentum deceleration (short + medium term, NOT redundant with roc_1/3)
+        # Short: roc_1 - roc_3 = is the last 5min move different from the 15min trend?
         feat["roc_deceleration"] = feat.get("roc_1", 0) - feat.get("roc_3", 0)
+        # Medium: roc_3 - roc_12 = is the 15min trend fading vs 1-hour trend?
+        feat["roc_deceleration_12"] = feat.get("roc_3", 0) - feat.get("roc_12", 0)
 
-        # Volume climax: extreme volume = capitulation / blow-off top
-        vol_sma20 = feat["volume"].rolling(20).mean()
-        feat["volume_climax"] = np.where(vol_sma20 > 0, feat["volume"] / vol_sma20, 1.0)
+        # Volume climax as z-score (NOT redundant with volume_ratio)
+        vol_mean = feat["volume"].rolling(20).mean()
+        vol_std = feat["volume"].rolling(20).std()
+        feat["volume_climax"] = np.where(vol_std > 0, (feat["volume"] - vol_mean) / vol_std, 0.0)
 
-        # Lower wick ratio: large lower wick = strong buying at lows
+        # Lower wick ratio: rolling 3-bar avg (smoothed, less noisy than single candle)
         total_candle = feat["high"] - feat["low"]
         lower_w = feat[["close", "open"]].min(axis=1) - feat["low"]
-        feat["lower_wick_ratio"] = np.where(total_candle > 0, lower_w / total_candle, 0.0)
+        raw_wick = pd.Series(np.where(total_candle > 0, lower_w / total_candle, 0.0), index=feat.index)
+        feat["lower_wick_ratio"] = raw_wick.rolling(3).mean()
 
-        # Distance from rolling 20-bar (100 min) high/low
+        # Distance from rolling high/low (20-bar = 100min, 96-bar = 8h for deeper V-bottoms)
         feat["dist_from_high_20"] = (
             (feat["close"] - feat["high"].rolling(20).max()) / feat["close"] * 100
         )
         feat["dist_from_low_20"] = (
             (feat["close"] - feat["low"].rolling(20).min()) / feat["close"] * 100
         )
+        feat["dist_from_high_96"] = (
+            (feat["close"] - feat["high"].rolling(96).max()) / feat["close"] * 100
+        )
+        feat["dist_from_low_96"] = (
+            (feat["close"] - feat["low"].rolling(96).min()) / feat["close"] * 100
+        )
 
-        # BB band distances (moved here so Trend model can use them too)
-        if "BBU_20_2.0" in feat.columns and "BBL_20_2.0" in feat.columns:
-            if "bb_upper_dist" not in feat.columns:
-                feat["bb_upper_dist"] = (feat["BBU_20_2.0"] - feat["close"]) / feat["close"] * 100
-            if "bb_lower_dist" not in feat.columns:
-                feat["bb_lower_dist"] = (feat["close"] - feat["BBL_20_2.0"]) / feat["close"] * 100
+        # BB band distances — compute from raw price, no dependency on pandas_ta column names
+        bb_mid = feat["close"].rolling(20).mean()
+        bb_std_val = feat["close"].rolling(20).std()
+        bb_upper = bb_mid + 2 * bb_std_val
+        bb_lower = bb_mid - 2 * bb_std_val
+        feat["bb_upper_dist"] = (bb_upper - feat["close"]) / feat["close"] * 100
+        feat["bb_lower_dist"] = (feat["close"] - bb_lower) / feat["close"] * 100
+
+        # Bullish/bearish volume (volume_ratio * candle position — unique interaction)
+        candle_rng = feat["high"] - feat["low"]
+        candle_position = np.where(candle_rng > 0, (feat["close"] - feat["low"]) / candle_rng, 0.5)
+        feat["bullish_volume"] = feat.get("volume_ratio", 1.0) * candle_position
+        feat["bearish_volume"] = feat.get("volume_ratio", 1.0) * (1 - candle_position)
 
         # ── Reversal detection features ────────────────────────
         # Multi-timeframe RSI divergence (price vs RSI direction mismatch)
