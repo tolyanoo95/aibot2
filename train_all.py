@@ -25,10 +25,11 @@ from src.data_fetcher import BinanceDataFetcher
 from src.features import FeatureEngineer
 from src.indicators import TechnicalIndicators
 from src.ml_model import MLSignalModel
+from src.trend_health_model import TrendHealthModel
+# Regime/Reversal/Range imports kept but not trained by default
 from src.regime_classifier import RegimeClassifier
 from src.reversal_model import ReversalModel
 from src.range_model import RangeModel
-from src.trend_health_model import TrendHealthModel
 
 logging.basicConfig(
     level=logging.INFO,
@@ -241,7 +242,7 @@ def train_all():
     console.print(Panel.fit(
         f"[bold]Multi-Model Training Pipeline[/bold]\n"
         f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"Models: Trend + Regime + Reversal + Range + Health (parallel)\n"
+        f"Models: Trend + Health (simplified architecture)\n"
         f"Pairs: {len(config.TRADING_PAIRS)} | Candles: {config.TRAIN_CANDLES}",
         border_style="green",
     ))
@@ -285,7 +286,7 @@ def train_all():
     # ═══════════════════════════════════════════════════════
     # STEP 2: Train all 4 models in PARALLEL
     # ═══════════════════════════════════════════════════════
-    console.print("\n[bold cyan]═══ STEP 2: Training 5 Models (parallel) ═══[/bold cyan]")
+    console.print("\n[bold cyan]═══ STEP 2: Training 2 Models (Trend + Health) ═══[/bold cyan]")
 
     results = {}
     with Progress(
@@ -293,14 +294,11 @@ def train_all():
         BarColumn(bar_width=30), MofNCompleteColumn(), TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Training …", total=5)
+        task = progress.add_task("Training …", total=2)
 
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        with ThreadPoolExecutor(max_workers=2) as pool:
             futures = {
                 pool.submit(_train_trend, pair_data, features): "Trend",
-                pool.submit(_train_regime, pair_data, features): "Regime",
-                pool.submit(_train_reversal, pair_data, features): "Reversal",
-                pool.submit(_train_range, pair_data, features): "Range",
                 pool.submit(_train_health, pair_data, features): "Health",
             }
             for future in as_completed(futures):
@@ -335,7 +333,7 @@ def train_all():
     table.add_column("Distribution")
     table.add_column("Status")
 
-    for name in ["Trend", "Regime", "Reversal", "Range", "Health"]:
+    for name in ["Trend", "Health"]:
         r = results.get(name, {"accuracy": 0, "std": 0, "samples": 0, "detail": "", "status": "SKIP"})
         style = "green" if r["status"] == "OK" else "red"
         table.add_row(
@@ -351,9 +349,9 @@ def train_all():
     console.print(table)
 
     ok_count = sum(1 for r in results.values() if r["status"] == "OK")
-    console.print(f"\n[bold]{ok_count}/5 models trained successfully[/bold]")
+    console.print(f"\n[bold]{ok_count}/2 models trained successfully[/bold]")
 
-    if ok_count == 5:
+    if ok_count == 2:
         console.print("[green]All models ready! Start bot: systemctl start aibot[/green]")
     else:
         console.print("[yellow]Some models failed — check logs above[/yellow]")

@@ -87,6 +87,11 @@ class SignalGenerator:
 
         direction, confidence = self._combine(ml_sig, ml_conf, llm_dir, llm_conf)
 
+        # ── Confidence cap: inverted confidence fix ─────────────
+        # Data showed conf 90-98% = WR 0%, conf 80-85% = WR 57%
+        if confidence > 0.90:
+            confidence = 0.85
+
         # ── Exhaustion guard: block trades at extremes ─────────
         if features and direction != "NEUTRAL":
             guard_reason = self._exhaustion_guard(direction, features)
@@ -123,10 +128,14 @@ class SignalGenerator:
                 confidence *= 0.3
 
         # SL / TP via ATR with minimum floor
+        # Per-regime TP: if ADX < 20 (range market), use tighter TP
         sl = tp = 0.0
         if atr > 0 and direction != "NEUTRAL":
             sl_dist = atr * self.config.SL_ATR_MULTIPLIER
-            tp_dist = atr * self.config.TP_ATR_MULTIPLIER
+            tp_mult = self.config.TP_ATR_MULTIPLIER
+            if adx < 20:
+                tp_mult = min(tp_mult, 1.5)
+            tp_dist = atr * tp_mult
 
             # enforce minimum SL distance (TP stays unchanged — keeps it reachable)
             min_sl = current_price * self.config.MIN_SL_PCT / 100
@@ -191,12 +200,14 @@ class SignalGenerator:
             if direction == "SHORT" and ema_trend > 0:
                 return "SHORT against bullish trend (price > EMA9)"
 
-        # 4. Time-of-day filter — skip dead hours
+        # 4. Time-of-day filter — skip dead hours + toxic night session
+        current_hour = datetime.now(timezone.utc).hour
         dead_hours = self.config.FILTER_DEAD_HOURS
-        if dead_hours:
-            current_hour = datetime.now(timezone.utc).hour
-            if current_hour in dead_hours:
-                return f"Dead hour (UTC {current_hour}:00)"
+        if dead_hours and current_hour in dead_hours:
+            return f"Dead hour (UTC {current_hour}:00)"
+        # Night session 23:00-05:59 UTC = WR 0% on real data
+        if current_hour >= 23 or current_hour < 6:
+            return f"Night session (UTC {current_hour}:00, WR 0%%)"
 
         # 5. Order book filter — don't trade against strong book pressure
         if abs(bid_ask_imbalance) > 0.5:

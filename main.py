@@ -71,10 +71,12 @@ class CryptoScanner:
         self.indicators = TechnicalIndicators()
         self.features = FeatureEngineer()
         self.ml_model = MLSignalModel(config.ML_MODEL_PATH)
+        self.health_model = TrendHealthModel("models/trend_health_model.pkl")
+        # Regime/Reversal/Range disabled — Trend model handles everything
+        # Models kept for logging only, not for signal generation
         self.regime_clf = RegimeClassifier("models/regime_model.pkl")
         self.reversal_model = ReversalModel("models/reversal_model.pkl")
         self.range_model = RangeModel("models/range_model.pkl")
-        self.health_model = TrendHealthModel("models/trend_health_model.pkl")
         self.llm = LLMAnalyzer(config) if config.USE_LLM else None
         self.market_ctx = MarketContext(config)
         self.signal_gen = SignalGenerator(config)
@@ -161,13 +163,8 @@ class CryptoScanner:
             )
         self._pair_regimes[symbol] = regime
 
-        # ── Model selection based on regime ────────────────────
-        if regime == "REVERSAL" and self.reversal_model.is_trained:
-            ml_result = self.reversal_model.predict(X)
-        elif regime == "RANGE" and self.range_model.is_trained:
-            ml_result = self.range_model.predict(X)
-        else:
-            ml_result = self.ml_model.predict(X)
+        # ── Always use Trend model (single source of truth) ────
+        ml_result = self.ml_model.predict(X)
 
         # ── All 3 models in parallel (for analysis) ──────────
         _all_models = {}
