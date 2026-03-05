@@ -200,14 +200,12 @@ class SignalGenerator:
             if direction == "SHORT" and ema_trend > 0:
                 return "SHORT against bullish trend (price > EMA9)"
 
-        # 4. Time-of-day filter — skip dead hours + toxic night session
-        current_hour = datetime.now(timezone.utc).hour
+        # 4. Time-of-day filter — skip dead hours
         dead_hours = self.config.FILTER_DEAD_HOURS
-        if dead_hours and current_hour in dead_hours:
-            return f"Dead hour (UTC {current_hour}:00)"
-        # Night session 23:00-05:59 UTC = WR 0% on real data
-        if current_hour >= 23 or current_hour < 6:
-            return f"Night session (UTC {current_hour}:00, WR 0%%)"
+        if dead_hours:
+            current_hour = datetime.now(timezone.utc).hour
+            if current_hour in dead_hours:
+                return f"Dead hour (UTC {current_hour}:00)"
 
         # 5. Order book filter — don't trade against strong book pressure
         if abs(bid_ask_imbalance) > 0.5:
