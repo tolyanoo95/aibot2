@@ -213,6 +213,16 @@ class CryptoScanner:
         # Previously had per-regime SL/TP but grid search showed
         # fixed SL=1.0 TP=3.0 works best across all regimes
 
+        # Extract exhaustion features for guard
+        _last_feat = X.iloc[-1]
+        _guard_features = {
+            "dist_from_high_96": float(_last_feat.get("dist_from_high_96", 0)),
+            "dist_from_low_96": float(_last_feat.get("dist_from_low_96", 0)),
+            "dist_from_high_288": float(_last_feat.get("dist_from_high_288", 0)),
+            "dist_from_low_288": float(_last_feat.get("dist_from_low_288", 0)),
+            "roc_deceleration": float(_last_feat.get("roc_deceleration", 0)),
+        }
+
         signal = self.signal_gen.generate(
             symbol=symbol,
             ml_result=ml_result,
@@ -223,6 +233,7 @@ class CryptoScanner:
             adx=adx,
             bid_ask_imbalance=ob_imbalance,
             ema_trend=ema_trend,
+            features=_guard_features,
         )
 
         # stamp regime on signal for logging

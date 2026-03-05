@@ -73,6 +73,7 @@ class SignalGenerator:
         adx: float = 25.0,
         bid_ask_imbalance: float = 0.0,
         ema_trend: int = 0,  # +1 = bullish (EMA9>EMA21), -1 = bearish, 0 = unknown
+        features: dict = None,  # exhaustion features for guard
     ) -> Signal:
         ml_sig = ml_result.get("signal", 0)
         ml_conf = ml_result.get("confidence", 0.0)
@@ -85,6 +86,14 @@ class SignalGenerator:
         risk = llm_result.get("risk_assessment", "HIGH")
 
         direction, confidence = self._combine(ml_sig, ml_conf, llm_dir, llm_conf)
+
+        # ── Exhaustion guard: block trades at extremes ─────────
+        if features and direction != "NEUTRAL":
+            guard_reason = self._exhaustion_guard(direction, features)
+            if guard_reason:
+                logger.info("%s %s GUARD: %s", symbol, direction, guard_reason)
+                direction = "NEUTRAL"
+                confidence *= 0.3
 
         # Penalize confidence when ensemble models disagree
         if ml_disagreement > 0 and direction != "NEUTRAL":
@@ -197,6 +206,47 @@ class SignalGenerator:
                 return f"Orderbook against SHORT (imbalance {bid_ask_imbalance:+.2f})"
 
         return ""  # all filters passed
+
+    # ── exhaustion guard ──────────────────────────────────────
+
+    @staticmethod
+    def _exhaustion_guard(direction: str, features: dict) -> str:
+        """Block trades when price is at exhaustion extremes.
+        Uses two windows: 8h (96 bars) for immediate V-bottom detection,
+        24h (288 bars) for recovery phase protection.
+        Returns reason string if blocked, empty string if OK."""
+        dist_high_96 = features.get("dist_from_high_96", 0)
+        dist_low_96 = features.get("dist_from_low_96", 0)
+        dist_high_288 = features.get("dist_from_high_288", 0)
+        dist_low_288 = features.get("dist_from_low_288", 0)
+        roc_decel = features.get("roc_deceleration", 0)
+
+        if direction == "SHORT":
+            # 8h window: V-bottom (price crashed, drop slowing)
+            if dist_high_96 < -3.0 and roc_decel > 0:
+                return (
+                    f"V-bottom 8h (price {dist_high_96:.1f}% from 8h high, "
+                    f"roc_d={roc_decel:+.2f})"
+                )
+            # 24h window: major crash happened — don't short regardless of momentum
+            if dist_high_288 < -2.0:
+                return (
+                    f"Post-crash 24h (price {dist_high_288:.1f}% from 24h high)"
+                )
+
+        if direction == "LONG":
+            if dist_low_96 > 3.0 and roc_decel < 0:
+                return (
+                    f"Blow-off top 8h (price {dist_low_96:.1f}% from 8h low, "
+                    f"roc_d={roc_decel:+.2f})"
+                )
+            # 24h window: major pump happened — don't long regardless of momentum
+            if dist_low_288 > 2.0:
+                return (
+                    f"Post-pump 24h (price {dist_low_288:.1f}% from 24h low)"
+                )
+
+        return ""
 
     # ── internals ────────────────────────────────────────────
 

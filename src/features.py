@@ -79,6 +79,8 @@ class FeatureEngineer:
         "dist_from_low_20",
         "dist_from_high_96",
         "dist_from_low_96",
+        "dist_from_high_288",
+        "dist_from_low_288",
         "consecutive_candles",
         "bb_lower_dist",
         "bb_upper_dist",
@@ -256,6 +258,12 @@ class FeatureEngineer:
         )
         feat["dist_from_low_96"] = (
             (feat["close"] - feat["low"].rolling(96).min()) / feat["close"] * 100
+        )
+        feat["dist_from_high_288"] = (
+            (feat["close"] - feat["high"].rolling(288).max()) / feat["close"] * 100
+        )
+        feat["dist_from_low_288"] = (
+            (feat["close"] - feat["low"].rolling(288).min()) / feat["close"] * 100
         )
 
         # BB band distances — compute from raw price, no dependency on pandas_ta column names

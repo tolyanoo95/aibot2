@@ -105,7 +105,7 @@ class Config:
 
     # ── Training ─────────────────────────────────────────────
     TRAIN_CANDLES: int = int(os.getenv("TRAIN_CANDLES", "30000"))  # ~100 days (fetched for all models)
-    TREND_TRAIN_CANDLES: int = int(os.getenv("TREND_TRAIN_CANDLES", "4320"))  # ~15 days (Trend model uses recent data only)
+    TREND_TRAIN_CANDLES: int = int(os.getenv("TREND_TRAIN_CANDLES", "8640"))  # ~30 days (sees both crashes and recoveries)
     LABEL_TP_MULTIPLIER: float = float(os.getenv("LABEL_TP_MULTIPLIER", "2.0"))   # symmetric with LABEL_SL for balanced BUY/SELL
     LABEL_SL_MULTIPLIER: float = float(os.getenv("LABEL_SL_MULTIPLIER", "2.0"))  # symmetric with LABEL_TP for balanced BUY/SELL
     LABEL_MAX_BARS: int = int(os.getenv("LABEL_MAX_BARS", "18"))  # matches MAX_HOLD_BARS
