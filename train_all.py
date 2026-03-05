@@ -28,6 +28,7 @@ from src.ml_model import MLSignalModel
 from src.regime_classifier import RegimeClassifier
 from src.reversal_model import ReversalModel
 from src.range_model import RangeModel
+from src.trend_health_model import TrendHealthModel
 
 logging.basicConfig(
     level=logging.INFO,
@@ -196,6 +197,43 @@ def _train_range(pair_data, features):
     return "Range", metrics, len(X_filt), samples
 
 
+def _train_health(pair_data, features):
+    """Train Trend Health Model (binary: HEALTHY/ENDING)."""
+    all_X, all_y = [], []
+    trend_limit = config.TREND_TRAIN_CANDLES
+    for pair, d in pair_data.items():
+        df_5m = d["df_5m"].iloc[-trend_limit:] if len(d["df_5m"]) > trend_limit else d["df_5m"]
+        X = d["X"].iloc[-len(df_5m):] if len(d["X"]) > len(df_5m) else d["X"]
+
+        # Use ALL features for max context
+        feat_cols = list(dict.fromkeys(features.get_feature_columns(X, model_type="all")))
+        available = [c for c in feat_cols if c in X.columns]
+        X_sel = X[available].copy()
+        X_sel = X_sel.loc[:, ~X_sel.columns.duplicated()]
+
+        y = features.create_health_labels(
+            df_5m, max_bars=config.LABEL_MAX_BARS, reversal_pct=1.0,
+        )
+        common = X_sel.index.intersection(y.index)
+        X_c = X_sel.loc[common].iloc[:-config.LABEL_MAX_BARS]
+        y_c = y.loc[common].iloc[:-config.LABEL_MAX_BARS]
+        all_X.append(X_c)
+        all_y.append(y_c)
+
+    X_all = pd.concat(all_X, ignore_index=True)
+    y_all = pd.concat(all_y, ignore_index=True)
+    X_all = X_all.loc[:, ~X_all.columns.duplicated()]
+
+    health_model = TrendHealthModel("models/trend_health_model.pkl")
+    fn = list(X_all.columns)
+    metrics = health_model.train(X_all, y_all, feature_names=fn)
+
+    n_healthy = int((y_all == 1).sum())
+    n_ending = int((y_all == 0).sum())
+    samples = f"HEALTHY:{n_healthy} ENDING:{n_ending}"
+    return "Health", metrics, len(X_all), samples
+
+
 # ── Main ──────────────────────────────────────────────────
 
 def train_all():
@@ -203,7 +241,7 @@ def train_all():
     console.print(Panel.fit(
         f"[bold]Multi-Model Training Pipeline[/bold]\n"
         f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"Models: Trend + Regime + Reversal + Range (parallel)\n"
+        f"Models: Trend + Regime + Reversal + Range + Health (parallel)\n"
         f"Pairs: {len(config.TRADING_PAIRS)} | Candles: {config.TRAIN_CANDLES}",
         border_style="green",
     ))
@@ -247,7 +285,7 @@ def train_all():
     # ═══════════════════════════════════════════════════════
     # STEP 2: Train all 4 models in PARALLEL
     # ═══════════════════════════════════════════════════════
-    console.print("\n[bold cyan]═══ STEP 2: Training 4 Models (parallel) ═══[/bold cyan]")
+    console.print("\n[bold cyan]═══ STEP 2: Training 5 Models (parallel) ═══[/bold cyan]")
 
     results = {}
     with Progress(
@@ -255,14 +293,15 @@ def train_all():
         BarColumn(bar_width=30), MofNCompleteColumn(), TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Training …", total=4)
+        task = progress.add_task("Training …", total=5)
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=5) as pool:
             futures = {
                 pool.submit(_train_trend, pair_data, features): "Trend",
                 pool.submit(_train_regime, pair_data, features): "Regime",
                 pool.submit(_train_reversal, pair_data, features): "Reversal",
                 pool.submit(_train_range, pair_data, features): "Range",
+                pool.submit(_train_health, pair_data, features): "Health",
             }
             for future in as_completed(futures):
                 name = futures[future]
@@ -296,7 +335,7 @@ def train_all():
     table.add_column("Distribution")
     table.add_column("Status")
 
-    for name in ["Trend", "Regime", "Reversal", "Range"]:
+    for name in ["Trend", "Regime", "Reversal", "Range", "Health"]:
         r = results.get(name, {"accuracy": 0, "std": 0, "samples": 0, "detail": "", "status": "SKIP"})
         style = "green" if r["status"] == "OK" else "red"
         table.add_row(
@@ -312,9 +351,9 @@ def train_all():
     console.print(table)
 
     ok_count = sum(1 for r in results.values() if r["status"] == "OK")
-    console.print(f"\n[bold]{ok_count}/4 models trained successfully[/bold]")
+    console.print(f"\n[bold]{ok_count}/5 models trained successfully[/bold]")
 
-    if ok_count == 4:
+    if ok_count == 5:
         console.print("[green]All models ready! Start bot: systemctl start aibot[/green]")
     else:
         console.print("[yellow]Some models failed — check logs above[/yellow]")
