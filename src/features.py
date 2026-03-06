@@ -87,6 +87,11 @@ class FeatureEngineer:
         "bullish_volume",
         "bearish_volume",
         "max_drawdown_48h",
+        # SHORT climax detection
+        "drop_speed_4",
+        "vol_trend_ratio",
+        "obv_change_6",
+        "rsi_slope_6",
     ]
 
     # Reversal-specific features
@@ -131,6 +136,82 @@ class FeatureEngineer:
         "price_vs_ema200",
         "atr_change",
         "consecutive_candles",
+    ]
+
+    # Mean-reversion features (for against-trend trades: "will price revert?")
+    MEAN_REVERSION_FEATURES: List[str] = [
+        # overbought/oversold
+        "rsi",
+        "STOCHRSIk_14_14_3_3",
+        "STOCHRSId_14_14_3_3",
+        # bollinger position (extremes = reversion likely)
+        "BBP_20_2.0",
+        "bb_lower_dist",
+        "bb_upper_dist",
+        # distance from means (stretched = revert)
+        "price_vs_ema50",
+        "price_vs_ema100",
+        "price_vs_ema200",
+        "dist_from_high_20",
+        "dist_from_low_20",
+        # momentum exhaustion
+        "roc_deceleration",
+        "rsi_slope",
+        "rsi_slope_6",
+        "drop_speed_4",
+        # volume exhaustion
+        "volume_climax",
+        "obv_change_6",
+        "vol_trend_ratio",
+        # candle reversal patterns
+        "lower_wick_ratio",
+        "consecutive_candles",
+        "body_ratio_avg",
+        # time
+        "hour_sin",
+        "hour_cos",
+        "session",
+    ]
+
+    # Momentum continuation features (for ML filter: "will momentum continue?")
+    MOMENTUM_FILTER_FEATURES: List[str] = [
+        # trend state
+        "trend_age",
+        "consecutive_candles",
+        "higher_high",
+        "lower_low",
+        "momentum_consistency",
+        # trend strength
+        "ADX_14",
+        "adx_delta_3",
+        "adx_delta_6",
+        "adx_above_25",
+        "ema_stack_bull",
+        "ema_stack_bear",
+        # momentum
+        "roc_3",
+        "roc_12",
+        "rsi_speed",
+        "rsi_zone",
+        "roc_deceleration",
+        # volume confirmation
+        "volume_ratio",
+        "vol_ma_ratio_short",
+        "vol_increasing",
+        "volume_climax",
+        # volatility
+        "atr_expansion",
+        "atr_trend",
+        "body_ratio_avg",
+        # position / mean reversion risk
+        "ema50_dist_pct",
+        "price_vs_ema200",
+        "dist_from_high_20",
+        "dist_from_low_20",
+        # time
+        "hour_sin",
+        "hour_cos",
+        "session",
     ]
 
     # Higher-TF features (added with a prefix like "htf_15m_", "htf_1h_")
@@ -362,6 +443,87 @@ class FeatureEngineer:
         if "oi_change_pct" in feat.columns:
             feat["oi_momentum"] = feat["oi_change_pct"].rolling(3).sum()
 
+        # ── Momentum continuation features ───────────────────
+        # Specifically designed to predict: "will current momentum continue?"
+
+        # 1. Trend age: bars since last direction change
+        price_dir = (feat["close"] > feat["close"].shift(1)).astype(int)
+        dir_change = (price_dir != price_dir.shift(1)).astype(int)
+        trend_age = pd.Series(0, index=feat.index)
+        count = 0
+        for i in range(len(dir_change)):
+            if dir_change.iloc[i] == 1:
+                count = 1
+            else:
+                count += 1
+            trend_age.iloc[i] = count
+        feat["trend_age"] = trend_age
+
+        # 2. ADX delta: is trend strengthening or weakening?
+        if "ADX_14" in feat.columns:
+            feat["adx_delta_3"] = feat["ADX_14"].diff(3)
+            feat["adx_delta_6"] = feat["ADX_14"].diff(6)
+            feat["adx_above_25"] = (feat["ADX_14"] > 25).astype(float)
+
+        # 3. Volume trend: is volume rising with price? (confirms momentum)
+        feat["vol_ma_ratio_short"] = feat["volume"].rolling(3).mean() / feat["volume"].rolling(12).mean().replace(0, 1)
+        feat["vol_increasing"] = (feat["volume"].rolling(3).mean() > feat["volume"].rolling(12).mean()).astype(float)
+
+        # 4. RSI position + speed (not divergence — where RSI IS and how fast it moves)
+        feat["rsi_speed"] = feat["rsi"].diff(3)
+        feat["rsi_zone"] = np.select(
+            [feat["rsi"] < 30, feat["rsi"] < 45, feat["rsi"] < 55, feat["rsi"] < 70],
+            [0, 1, 2, 3],
+            default=4
+        )  # 0=oversold, 2=neutral, 4=overbought
+
+        # 5. EMA alignment (are EMAs stacked bullish or bearish?)
+        ema9 = feat.get("ema_9", feat["close"])
+        ema21 = feat.get("ema_21", feat["close"])
+        ema50 = feat.get("ema_50", feat["close"])
+        feat["ema_stack_bull"] = ((ema9 > ema21) & (ema21 > ema50)).astype(float)
+        feat["ema_stack_bear"] = ((ema9 < ema21) & (ema21 < ema50)).astype(float)
+
+        # 6. Price distance from EMA50 (too far = mean reversion risk)
+        feat["ema50_dist_pct"] = (feat["close"] - ema50) / feat["close"] * 100
+
+        # 7. ATR trend (is volatility expanding = trend accelerating?)
+        feat["atr_trend"] = feat["atr"].rolling(3).mean() / feat["atr"].rolling(12).mean().replace(0, 1)
+
+        # 8. Higher high / lower low pattern
+        feat["higher_high"] = (feat["high"] > feat["high"].shift(1)).astype(float).rolling(4).sum()
+        feat["lower_low"] = (feat["low"] < feat["low"].shift(1)).astype(float).rolling(4).sum()
+
+        # 9. Momentum consistency (how many of last N bars moved in roc_12 direction)
+        roc12 = feat.get("roc_12", pd.Series(0, index=feat.index))
+        bar_up = (feat["close"] > feat["open"]).astype(float)
+        feat["momentum_consistency"] = np.where(
+            roc12 > 0,
+            bar_up.rolling(6).mean(),
+            (1 - bar_up).rolling(6).mean()
+        )
+
+        # 10. Candle body ratio (big bodies = conviction, small bodies = indecision)
+        feat["body_ratio_avg"] = feat["body_size"].rolling(4).mean()
+
+        # ── SHORT-specific features (climax selling detection) ──
+
+        # Drop speed: how fast price fell in last 4 bars (sharp drop = bounce risk)
+        feat["drop_speed_4"] = feat["close"].pct_change(4) * 100
+
+        # Volume trend: recent volume vs prior (spike = climax selling)
+        vol_recent = feat["volume"].rolling(3).mean()
+        vol_prior = feat["volume"].rolling(8).mean()
+        feat["vol_trend_ratio"] = np.where(vol_prior > 0, vol_recent / vol_prior, 1.0)
+
+        # OBV change: on-balance volume momentum (sharp OBV drop = panic → bounce)
+        if "obv" in feat.columns:
+            obv_pct = feat["obv"].pct_change(6) * 100
+            feat["obv_change_6"] = obv_pct.clip(-50, 50)
+
+        # RSI slope 6-bar: how fast RSI is moving (too fast down = oversold bounce)
+        feat["rsi_slope_6"] = feat["rsi"].diff(6)
+
         return feat
 
     def add_htf_features(
@@ -532,6 +694,15 @@ class FeatureEngineer:
             return base + extra
         elif model_type == "regime":
             return [c for c in self.REGIME_FEATURES if c in df.columns]
+        elif model_type == "momentum_filter":
+            base_cols = [c for c in self.BASE_FEATURES if c in df.columns]
+            mom_cols = [c for c in self.MOMENTUM_FILTER_FEATURES if c in df.columns]
+            htf_cols = sorted([c for c in df.columns if c.startswith("htf_")])
+            rhtf_cols = sorted([c for c in df.columns if c.startswith("rhtf_")])
+            all_cols = list(dict.fromkeys(base_cols + mom_cols + htf_cols + rhtf_cols))
+        elif model_type == "mean_reversion":
+            return [c for c in self.MEAN_REVERSION_FEATURES if c in df.columns]
+            return all_cols
         else:  # "all"
             rev = [c for c in self.REVERSAL_FEATURES if c in df.columns]
             rng = [c for c in self.RANGE_FEATURES if c in df.columns]
