@@ -645,7 +645,7 @@ def run_filter15m(
 
     _all_pairs = (pairs if pairs else config.TRADING_PAIRS)
     # Exclude consistently worst pair
-    trading_pairs_list = [p for p in _all_pairs if p != "XRP/USDT"]
+    trading_pairs_list = list(_all_pairs)  # all 11 pairs
     pair_to_id = {sym: i for i, sym in enumerate(sorted(trading_pairs_list))}
 
     console.print(Panel(
