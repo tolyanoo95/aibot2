@@ -61,11 +61,15 @@ def simulate_trades(
     cooldown: int = 4,
     adx_col: str = "ADX_14",
     threshold: float = None,
+    pair_cooldown_sl: int = 2,
+    pair_cooldown_bars: int = 8,
 ) -> List[SimTrade]:
     """Simulate trading with SL/TP checked against high/low each bar."""
     trades: List[SimTrade] = []
     open_trades: List[SimTrade] = []
     cooldowns: dict = {}
+    sl_streaks: dict = {}
+    pair_dir_cooldowns: dict = {}
 
     close = df["close"].values
     high = df["high"].values
@@ -129,6 +133,14 @@ def simulate_trades(
                 trades.append(t)
                 cooldowns[t.symbol] = bar_idx + cooldown
 
+                key = (t.symbol, t.direction)
+                if t.exit_reason == "SL":
+                    sl_streaks[key] = sl_streaks.get(key, 0) + 1
+                    if sl_streaks[key] >= pair_cooldown_sl:
+                        pair_dir_cooldowns[key] = bar_idx + pair_cooldown_bars
+                else:
+                    sl_streaks[key] = 0
+
         # Try to open new trade
         direction = sig.get("direction")
         conf = sig.get("confidence", 0)
@@ -142,6 +154,8 @@ def simulate_trades(
         if len(open_trades) >= max_open:
             continue
         if cooldowns.get(symbol, 0) > bar_idx:
+            continue
+        if pair_dir_cooldowns.get((symbol, direction), 0) > bar_idx:
             continue
         if any(t.symbol == symbol for t in open_trades):
             continue
@@ -211,11 +225,15 @@ def simulate_dca_trades(
     max_open: int = 2,
     cooldown: int = 3,
     threshold: float = 0.10,
+    pair_cooldown_sl: int = 2,
+    pair_cooldown_bars: int = 8,
 ) -> List[DcaTrade]:
     """DCA v2: 5 improvements to reduce HARD_SL losses."""
     trades: List[DcaTrade] = []
     open_positions: List[DcaTrade] = []
     cooldowns: dict = {}
+    sl_streaks: dict = {}
+    pair_dir_cooldowns: dict = {}
 
     close = df["close"].values
     high = df["high"].values
@@ -331,6 +349,14 @@ def simulate_dca_trades(
                 trades.append(pos)
                 cooldowns[pos.symbol] = bar_idx + cooldown
 
+                key = (pos.symbol, pos.direction)
+                if pos.exit_reason == "HARD_SL":
+                    sl_streaks[key] = sl_streaks.get(key, 0) + 1
+                    if sl_streaks[key] >= pair_cooldown_sl:
+                        pair_dir_cooldowns[key] = bar_idx + pair_cooldown_bars
+                else:
+                    sl_streaks[key] = 0
+
         direction = sig.get("direction")
         conf = sig.get("confidence", 0)
         symbol = sig.get("symbol", "")
@@ -342,6 +368,8 @@ def simulate_dca_trades(
         if len(open_positions) >= max_open:
             continue
         if cooldowns.get(symbol, 0) > bar_idx:
+            continue
+        if pair_dir_cooldowns.get((symbol, direction), 0) > bar_idx:
             continue
         if any(p.symbol == symbol for p in open_positions):
             continue
