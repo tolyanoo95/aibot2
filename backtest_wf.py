@@ -83,6 +83,16 @@ def simulate_trades(
             if bars_held <= 0:
                 continue
 
+            # Tighten SL after price confirms direction (+0.5x ATR)
+            entry_atr = atr[t.entry_bar] if t.entry_bar < len(atr) and not np.isnan(atr[t.entry_bar]) else 0
+            if entry_atr > 0:
+                if t.direction == "LONG" and high[bar_idx] >= t.entry_price + 0.5 * entry_atr:
+                    new_sl = t.entry_price - 1.0 * entry_atr
+                    t.sl = max(t.sl, new_sl)
+                elif t.direction == "SHORT" and low[bar_idx] <= t.entry_price - 0.5 * entry_atr:
+                    new_sl = t.entry_price + 1.0 * entry_atr
+                    t.sl = min(t.sl, new_sl)
+
             hit_tp = hit_sl = False
             if t.direction == "LONG":
                 hit_tp = high[bar_idx] >= t.tp
