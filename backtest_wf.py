@@ -938,31 +938,51 @@ def run_filter15m(
                 })
 
             if use_dca:
-                # Trend detection: price vs EMA50
+                # 3-level trend detection
+                ema9_vals = df_test["ema_9"].values if "ema_9" in df_test.columns else np.full(len(df_test), 0)
+                ema21_vals = df_test["ema_21"].values if "ema_21" in df_test.columns else np.full(len(df_test), 0)
                 ema50_vals = df_test["ema_50"].values if "ema_50" in df_test.columns else np.full(len(df_test), 0)
-                close_vals = df_test["close"].values
-
-                # DCA for WITH-trend, scalp SL for AGAINST-trend
                 rsi_slope_vals = df_test["rsi"].diff(6).values if "rsi" in df_test.columns else np.zeros(len(df_test))
 
                 with_trend_sigs = []
+                weak_trend_sigs = []
                 against_trend_sigs = []
                 for s in signals:
                     idx = s["bar_idx"]
+                    e9 = ema9_vals[idx] if idx < len(ema9_vals) else 0
+                    e21 = ema21_vals[idx] if idx < len(ema21_vals) else 0
                     e50 = ema50_vals[idx] if idx < len(ema50_vals) else 0
-                    trend_up = close_vals[idx] > e50 if e50 > 0 else True
                     d = s["direction"]
                     rs = rsi_slope_vals[idx] if idx < len(rsi_slope_vals) else 0
 
-                    if (d == "LONG" and trend_up) or (d == "SHORT" and not trend_up):
-                        # Fix HARD_SL: block DCA entry if rsi_slope shows exhaustion
+                    # 3 levels of trend
+                    if e9 > 0 and e21 > 0 and e50 > 0:
+                        ema_stack_bull = e9 > e21 > e50
+                        ema_stack_bear = e9 < e21 < e50
+                        ema_short_bull = e9 > e21
+                        ema_short_bear = e9 < e21
+                    else:
+                        ema_stack_bull = ema_stack_bear = False
+                        ema_short_bull = ema_short_bear = False
+
+                    # STRONG trend: EMA9 > EMA21 > EMA50 aligned with direction
+                    if (d == "LONG" and ema_stack_bull) or (d == "SHORT" and ema_stack_bear):
                         if (d == "LONG" and rs > 1.5) or (d == "SHORT" and rs < -1.5):
-                            # Trend exhausting — downgrade to against-trend (scalp)
-                            against_trend_sigs.append(s)
+                            weak_trend_sigs.append(s)
                             with_trend_sigs.append({**s, "direction": "NEUTRAL"})
+                            against_trend_sigs.append({**s, "direction": "NEUTRAL"})
                         else:
                             with_trend_sigs.append(s)
+                            weak_trend_sigs.append({**s, "direction": "NEUTRAL"})
                             against_trend_sigs.append({**s, "direction": "NEUTRAL"})
+
+                    # WEAK trend: EMA9 > EMA21 but NOT fully stacked (pullback)
+                    elif (d == "LONG" and ema_short_bull) or (d == "SHORT" and ema_short_bear):
+                        weak_trend_sigs.append(s)
+                        with_trend_sigs.append({**s, "direction": "NEUTRAL"})
+                        against_trend_sigs.append({**s, "direction": "NEUTRAL"})
+
+                    # AGAINST trend: EMAs against direction
                     else:
                         # Against-trend: 4 filters to reduce AT losses (85% of all losses)
                         obv_vals = df_test["obv"].pct_change(6).values * 100 if "obv" in df_test.columns else np.zeros(len(df_test))
@@ -994,7 +1014,9 @@ def run_filter15m(
                         else:
                             against_trend_sigs.append({**s, "direction": "NEUTRAL"})
                         with_trend_sigs.append({**s, "direction": "NEUTRAL"})
+                        weak_trend_sigs.append({**s, "direction": "NEUTRAL"})
 
+                # STRONG trend: DCA with max 3 entries
                 dca_trades = simulate_dca_trades(
                     df_test, with_trend_sigs,
                     tp_mult=tp_mult, dca_step_mult=1.0,
@@ -1002,13 +1024,29 @@ def run_filter15m(
                     max_hold=36, max_open=config.MAX_OPEN_TRADES,
                     cooldown=3, threshold=conf_threshold,
                 )
+                # WEAK trend: split LONG (TP=1.5) and SHORT (TP=1.0 scalp)
+                weak_long_sigs = [s if s["direction"]=="LONG" else {**s,"direction":"NEUTRAL"} for s in weak_trend_sigs]
+                weak_short_sigs = [s if s["direction"]=="SHORT" else {**s,"direction":"NEUTRAL"} for s in weak_trend_sigs]
+                weak_long = simulate_trades(
+                    df_test, weak_long_sigs,
+                    sl_mult=2.0, tp_mult=tp_mult,
+                    max_hold=24, max_open=config.MAX_OPEN_TRADES,
+                    cooldown=3, threshold=conf_threshold,
+                )
+                weak_short = simulate_trades(
+                    df_test, weak_short_sigs,
+                    sl_mult=2.0, tp_mult=1.0,
+                    max_hold=12, max_open=config.MAX_OPEN_TRADES,
+                    cooldown=3, threshold=conf_threshold,
+                )
+                weak_trades = weak_long + weak_short
                 sl_trades = simulate_trades(
                     df_test, against_trend_sigs,
                     sl_mult=2.0, tp_mult=1.0,
                     max_hold=12, max_open=config.MAX_OPEN_TRADES,
                     cooldown=3, threshold=conf_threshold,
                 )
-                trades = dca_trades + sl_trades
+                trades = dca_trades + weak_trades + sl_trades
             else:
                 trades = simulate_trades(
                     df_test, signals,
