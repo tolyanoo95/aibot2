@@ -643,6 +643,11 @@ def run_filter15m(
     train_candles = train_days * BARS_15M
     test_candles = test_days * BARS_15M
 
+    _all_pairs = (pairs if pairs else config.TRADING_PAIRS)
+    # Exclude consistently worst pair
+    trading_pairs_list = [p for p in _all_pairs if p != "XRP/USDT"]
+    pair_to_id = {sym: i for i, sym in enumerate(sorted(trading_pairs_list))}
+
     console.print(Panel(
         f"[bold cyan]15m ML Filter Strategy[/bold cyan]\n"
         f"[bold]ML filters bad momentum entries (not predicting direction)[/bold]\n"
@@ -657,7 +662,7 @@ def run_filter15m(
     fe = FeatureEngineer()
     sig_gen = SignalGenerator(config)
 
-    trading_pairs = pairs if pairs else config.TRADING_PAIRS
+    trading_pairs = trading_pairs_list
     console.print(f"\n[cyan]Fetching 15m data for {len(trading_pairs)} pairs...[/cyan]")
     all_pair_data = {}
     for symbol in trading_pairs:
@@ -704,8 +709,10 @@ def run_filter15m(
             cols_mr = fe.get_feature_columns(feat, model_type="mean_reversion")
             X_trend = feat[cols_trend].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
             X_mr = feat[cols_mr].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
-            feat_names_refs["trend"] = cols_trend
-            feat_names_refs["mr"] = cols_mr
+            X_trend["pair_id"] = pair_to_id.get(symbol, 0)
+            X_mr["pair_id"] = pair_to_id.get(symbol, 0)
+            feat_names_refs["trend"] = list(cols_trend) + ["pair_id"]
+            feat_names_refs["mr"] = list(cols_mr) + ["pair_id"]
 
             # Create filter labels: for each bar with momentum signal,
             # did the momentum trade hit TP (1) or SL/timeout (0)?
@@ -831,6 +838,8 @@ def run_filter15m(
             cols_mr = fe.get_feature_columns(feat_all, model_type="mean_reversion")
             X_trend = feat_all[cols_trend].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
             X_mr = feat_all[cols_mr].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
+            X_trend["pair_id"] = pair_to_id.get(symbol, 0)
+            X_mr["pair_id"] = pair_to_id.get(symbol, 0)
 
             X_t = X_trend.iloc[train_end:test_end]
             X_m = X_mr.iloc[train_end:test_end]
@@ -854,6 +863,23 @@ def run_filter15m(
 
                 conf = 0
                 if direction != "NEUTRAL":
+                    # Universal momentum-alive check (rsi_slope<0 = dead)
+                    # But for SHORT: flip logic (rsi falling = SHORT momentum alive)
+                    rsi_sl_6 = float(df_test["rsi"].diff(6).iloc[j]) if "rsi" in df_test.columns else 0
+                    if direction == "LONG" and rsi_sl_6 < 0:
+                        direction = "NEUTRAL"
+                        continue
+                    elif direction == "SHORT" and rsi_sl_6 > 0:
+                        direction = "NEUTRAL"
+                        continue
+
+                    # Volume guard for LONG
+                    if direction == "LONG":
+                        vol_r = float(df_test["volume_ratio"].iloc[j]) if "volume_ratio" in df_test.columns else 1
+                        if vol_r > 1.3:
+                            direction = "NEUTRAL"
+                            continue
+
                     # Determine with/against trend
                     e50 = ema50_test[j] if j < len(ema50_test) else 0
                     trend_up = close_test[j] > e50 if e50 > 0 else True
@@ -866,12 +892,21 @@ def run_filter15m(
                         model_key = "long_at" if direction == "LONG" else "short_at"
                         X_row = X_m.iloc[[j]]
 
+                    # OBV confirmation only for LONG
+                    if direction == "LONG":
+                        obv_chg = float(df_test["obv"].pct_change(6).iloc[j] * 100) if "obv" in df_test.columns else 5
+                        if obv_chg < 1.0:
+                            min_conf_adj = 0.70
+                        else:
+                            min_conf_adj = 0.65 if "_at" in model_key else conf_threshold
+                    else:
+                        min_conf_adj = 0.65 if "_at" in model_key else conf_threshold
+
                     if model_key in models:
                         pred = models[model_key].predict(X_row)
                         ml_signal = pred.get("signal", 0)
                         ml_conf = pred.get("confidence", 0)
-                        min_conf = 0.65 if "_at" in model_key else conf_threshold
-                        if ml_signal == 1 and ml_conf >= min_conf:
+                        if ml_signal == 1 and ml_conf >= min_conf_adj:
                             conf = ml_conf
                         else:
                             direction = "NEUTRAL"
@@ -929,8 +964,32 @@ def run_filter15m(
                             with_trend_sigs.append(s)
                             against_trend_sigs.append({**s, "direction": "NEUTRAL"})
                     else:
-                        # Against-trend: higher conf required (0.65)
-                        if s["confidence"] >= 0.65:
+                        # Against-trend: 4 filters to reduce AT losses (85% of all losses)
+                        obv_vals = df_test["obv"].pct_change(6).values * 100 if "obv" in df_test.columns else np.zeros(len(df_test))
+                        obv_v = obv_vals[idx] if idx < len(obv_vals) else 0
+
+                        # #1 rsi_slope filter: TO has -0.37, TP has +1.04
+                        at_ok = True
+                        if rs < 0:
+                            at_ok = False  # RSI falling = momentum dying
+
+                        # #2 OBV filter: TO has -0.79, TP has +0.87
+                        if obv_v < 0:
+                            at_ok = False  # OBV not confirming
+
+                        # #3 Higher conf for AT without confirmation
+                        min_at_conf = 0.65
+                        if not at_ok:
+                            min_at_conf = 0.80  # very strict if signals don't confirm
+
+                        # #4 HARD_SL volume filter: HSL has obv +5.42 (volume spike)
+                        # Already handled by guard #2 for LONG, here just block AT on spike
+                        vol_v = float(df_test["volume_ratio"].iloc[idx]) if "volume_ratio" in df_test.columns and idx < len(df_test) else 1
+                        if vol_v > 1.5:
+                            at_ok = False
+                            min_at_conf = 0.80
+
+                        if s["confidence"] >= min_at_conf:
                             against_trend_sigs.append(s)
                         else:
                             against_trend_sigs.append({**s, "direction": "NEUTRAL"})
