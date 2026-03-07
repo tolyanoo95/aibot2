@@ -888,6 +888,10 @@ def run_filter15m(
             ema50_test = df_test["ema_50"].values if "ema_50" in df_test.columns else np.full(len(df_test), 0)
             close_test = df_test["close"].values
 
+            # Volatility regime: ATR expansion ratio
+            atr_test = df_test["atr"].values if "atr" in df_test.columns else np.ones(len(df_test))
+            atr_ma20 = pd.Series(atr_test).rolling(20, min_periods=1).mean().values
+
             signals = []
             for j in range(len(X_t)):
                 roc = float(df_test["roc_12"].iloc[j]) if "roc_12" in df_test.columns else 0
@@ -901,6 +905,12 @@ def run_filter15m(
 
                 conf = 0
                 if direction != "NEUTRAL":
+                    # Volatility regime filter: high ATR expansion = whipsaw risk
+                    atr_exp = atr_test[j] / atr_ma20[j] if atr_ma20[j] > 0 else 1.0
+                    if atr_exp > 1.5:
+                        direction = "NEUTRAL"
+                        continue
+
                     # Universal momentum-alive check (rsi_slope<0 = dead)
                     # But for SHORT: flip logic (rsi falling = SHORT momentum alive)
                     rsi_sl_6 = float(df_test["rsi"].diff(6).iloc[j]) if "rsi" in df_test.columns else 0
