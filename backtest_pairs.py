@@ -96,7 +96,7 @@ def compute_pair_pnl(trade: PairTrade) -> float:
     else:
         pnl_a = (trade.entry_price_a - trade.exit_price_a) / trade.entry_price_a * 100
         pnl_b = (trade.exit_price_b - trade.entry_price_b) / trade.entry_price_b * 100
-    return (pnl_a + pnl_b) / 2 * trade.entries / 3
+    return (pnl_a + pnl_b) / 2 * trade.entries
 
 
 def run_pairs_backtest(
