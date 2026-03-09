@@ -104,8 +104,8 @@ def run_volbars_backtest(
     train_bars: int = 2000,
     test_bars: int = 500,
     vol_threshold: float = 2000,
-    sl_mult: float = 3.5,
-    tp_mult: float = 1.5,
+    sl_mult: float = 1.5,
+    tp_mult: float = 3.0,
     long_mom: float = 0.30,
     short_mom: float = 0.10,
     conf_threshold: float = 0.55,
@@ -130,10 +130,15 @@ def run_volbars_backtest(
 
     console.print(f"[cyan]Fetching 15m data and converting to volume bars (no lookahead)...[/cyan]")
     all_pair_data = {}
+    all_time_data = {}  # time bars for realistic ATR
     for symbol in trading_pairs:
         df = fetcher.fetch_ohlcv_extended(symbol, "15m", total_candles=total_candles)
         if df.empty or len(df) < 200:
             continue
+
+        # Keep time bars for ATR
+        tdf = indicators.calculate_all(df.copy())
+        all_time_data[symbol] = tdf
 
         vdf = resample_to_volume_bars(df)
         if len(vdf) < train_bars + test_bars:
@@ -141,12 +146,39 @@ def run_volbars_backtest(
             continue
 
         vdf = indicators.calculate_all(vdf)
+
+        # Replace volume bar ATR with time bar ATR (forward-filled to volume bar timestamps)
+        time_atr = tdf["atr"].reindex(vdf.index, method="ffill")
+        vdf["atr"] = time_atr.values
+
         all_pair_data[symbol] = vdf
-        console.print(f"  {symbol}: {len(vdf)} vol bars")
+        vol_atr = (vdf["atr"] / vdf["close"] * 100).mean()
+        console.print(f"  {symbol}: {len(vdf)} vol bars (ATR from time bars: {vol_atr:.3f}%)")
 
     if not all_pair_data:
         console.print("[red]No data![/red]")
         return
+
+    # Compute ratio z-scores vs BTC and ETH (pairs trading signal as feature)
+    RATIO_LB = 96
+    ratio_zscores = {}
+    btc_sym, eth_sym = "BTC/USDT", "ETH/USDT"
+    if btc_sym in all_pair_data and eth_sym in all_pair_data:
+        btc_c = all_pair_data[btc_sym]["close"]
+        eth_c = all_pair_data[eth_sym]["close"]
+        for symbol, vdf in all_pair_data.items():
+            sc = vdf["close"]
+            rf = pd.DataFrame(index=vdf.index)
+            for ref_sym, ref_c, col in [(btc_sym, btc_c, "ratio_vs_btc_z"), (eth_sym, eth_c, "ratio_vs_eth_z")]:
+                if symbol == ref_sym:
+                    rf[col] = 0.0
+                else:
+                    r = sc / ref_c.reindex(vdf.index, method="ffill")
+                    rm = r.rolling(RATIO_LB, min_periods=20).mean()
+                    rs = r.rolling(RATIO_LB, min_periods=20).std().replace(0, 1)
+                    rf[col] = ((r - rm) / rs).replace([np.inf, -np.inf], 0).fillna(0)
+            ratio_zscores[symbol] = rf
+        console.print(f"  Ratio z-scores computed (pairs trading signal as features)")
 
     # Walk-forward on volume bars
     all_trades = []
@@ -178,7 +210,14 @@ def run_volbars_backtest(
             cols = fe.get_feature_columns(feat, model_type="trend")
             X = feat[cols].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
             X["pair_id"] = pair_to_id.get(symbol, 0)
-            feat_names_refs["trend"] = list(cols) + ["pair_id"]
+            if symbol in ratio_zscores:
+                rz = ratio_zscores[symbol].iloc[start:train_end].reindex(X.index, method="ffill").fillna(0)
+                X["ratio_vs_btc_z"] = rz["ratio_vs_btc_z"].values
+                X["ratio_vs_eth_z"] = rz["ratio_vs_eth_z"].values
+            else:
+                X["ratio_vs_btc_z"] = 0.0
+                X["ratio_vs_eth_z"] = 0.0
+            feat_names_refs["trend"] = list(cols) + ["pair_id", "ratio_vs_btc_z", "ratio_vs_eth_z"]
 
             close = df_train["close"].values
             high = df_train["high"].values
@@ -279,6 +318,13 @@ def run_volbars_backtest(
             cols = fe.get_feature_columns(feat_all, model_type="trend")
             X_all = feat_all[cols].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
             X_all["pair_id"] = pair_to_id.get(symbol, 0)
+            if symbol in ratio_zscores:
+                rz = ratio_zscores[symbol].reindex(feat_all.index, method="ffill").fillna(0)
+                X_all["ratio_vs_btc_z"] = rz["ratio_vs_btc_z"].values
+                X_all["ratio_vs_eth_z"] = rz["ratio_vs_eth_z"].values
+            else:
+                X_all["ratio_vs_btc_z"] = 0.0
+                X_all["ratio_vs_eth_z"] = 0.0
 
             X_test = X_all.iloc[train_end:test_end]
             df_test = df_with_lookback.iloc[train_end:test_end]
@@ -287,6 +333,8 @@ def run_volbars_backtest(
 
             ema50_test = df_test["ema_50"].values if "ema_50" in df_test.columns else np.full(len(df_test), 0)
             close_test = df_test["close"].values
+            atr_test = df_test["atr"].values if "atr" in df_test.columns else np.ones(len(df_test))
+            atr_ma20 = pd.Series(atr_test).rolling(20, min_periods=1).mean().values
 
             signals = []
             for j in range(len(X_test)):
@@ -300,6 +348,18 @@ def run_volbars_backtest(
 
                 conf = 0
                 if direction != "NEUTRAL":
+                    # Guard: volatility filter
+                    atr_exp = atr_test[j] / atr_ma20[j] if atr_ma20[j] > 0 else 1.0
+                    if atr_exp > 1.5:
+                        direction = "NEUTRAL"; continue
+
+                    # Guard: rsi_slope (momentum alive?)
+                    rsi_s6 = float(df_test["rsi"].diff(6).iloc[j]) if "rsi" in df_test.columns else 0
+                    if direction == "LONG" and rsi_s6 < 0:
+                        direction = "NEUTRAL"; continue
+                    if direction == "SHORT" and rsi_s6 > 0:
+                        direction = "NEUTRAL"; continue
+
                     e50 = ema50_test[j] if j < len(ema50_test) else 0
                     trend_up = close_test[j] > e50 if e50 > 0 else True
                     with_trend = (direction == "LONG" and trend_up) or (direction == "SHORT" and not trend_up)
