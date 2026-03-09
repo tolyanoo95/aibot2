@@ -287,25 +287,22 @@ def run_volbars_backtest(
                 train_data[key]["y"].append(y_val)
 
         models = {}
-        for dk in ["long_wt", "long_at", "short_wt", "short_at"]:
-            xl = train_data[dk]["X"]
-            yl = train_data[dk]["y"]
-            if not xl or len(xl) < 50:
-                continue
-            X_tr = pd.concat(xl, ignore_index=True)
-            y_tr = pd.Series(yl)
-            fn = feat_names_refs["trend"]
-            n_good = int((y_tr == 1).sum())
-            good_pct = n_good * 100 // len(y_tr)
-            tmp_path = os.path.join(tempfile.gettempdir(), f"volbar_{dk}_f{fold}.json")
-            m = MLSignalModel(tmp_path)
-            sw = fe.compute_sample_weights(y_tr)
-            m.train(X_tr, y_tr, fn, sample_weights=sw)
-            models[dk] = m
-
-        if not models:
-            start += test_bars
-            continue
+        if conf_threshold > 0:
+            for dk in ["long_wt", "long_at", "short_wt", "short_at"]:
+                xl = train_data[dk]["X"]
+                yl = train_data[dk]["y"]
+                if not xl or len(xl) < 50:
+                    continue
+                X_tr = pd.concat(xl, ignore_index=True)
+                y_tr = pd.Series(yl)
+                fn = feat_names_refs["trend"]
+                n_good = int((y_tr == 1).sum())
+                good_pct = n_good * 100 // len(y_tr)
+                tmp_path = os.path.join(tempfile.gettempdir(), f"volbar_{dk}_f{fold}.json")
+                m = MLSignalModel(tmp_path)
+                sw = fe.compute_sample_weights(y_tr)
+                m.train(X_tr, y_tr, fn, sample_weights=sw)
+                models[dk] = m
 
         # === TEST ===
         fold_trades = []
@@ -366,7 +363,9 @@ def run_volbars_backtest(
                     model_key = ("long_wt" if direction == "LONG" else "short_wt") if with_trend else ("long_at" if direction == "LONG" else "short_at")
                     X_row = X_test.iloc[[j]]
 
-                    if model_key in models:
+                    if conf_threshold <= 0:
+                        conf = 0.90
+                    elif model_key in models:
                         pred = models[model_key].predict(X_row)
                         ml_signal = pred.get("signal", 0)
                         ml_conf = pred.get("confidence", 0)
