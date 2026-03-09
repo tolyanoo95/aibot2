@@ -382,10 +382,11 @@ def run_volbars_backtest(
                     "direction": direction, "confidence": conf,
                 })
 
-            trades = simulate_trades(
+            trades = simulate_dca_trades(
                 df_test, signals,
-                sl_mult=sl_mult, tp_mult=tp_mult,
-                max_hold=12, max_open=config.MAX_OPEN_TRADES,
+                tp_mult=tp_mult, dca_step_mult=1.0,
+                max_entries=3, hard_sl_mult=sl_mult,
+                max_hold=24, max_open=config.MAX_OPEN_TRADES,
                 cooldown=3, threshold=conf_threshold,
             )
             fold_trades.extend(trades)
