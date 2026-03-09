@@ -109,6 +109,7 @@ def run_volbars_backtest(
     long_mom: float = 0.30,
     short_mom: float = 0.10,
     conf_threshold: float = 0.55,
+    use_dca: bool = False,
 ):
     """ML backtest on volume bars instead of time bars."""
 
@@ -381,13 +382,22 @@ def run_volbars_backtest(
                     "direction": direction, "confidence": conf,
                 })
 
-            trades = simulate_dca_trades(
-                df_test, signals,
-                tp_mult=tp_mult, dca_step_mult=1.0,
-                max_entries=3, hard_sl_mult=sl_mult,
-                max_hold=24, max_open=config.MAX_OPEN_TRADES,
-                cooldown=3, threshold=conf_threshold,
-            )
+            if use_dca:
+                trades = simulate_dca_trades(
+                    df_test, signals,
+                    tp_mult=tp_mult, dca_step_mult=1.0,
+                    max_entries=3, hard_sl_mult=sl_mult,
+                    max_hold=24, max_open=config.MAX_OPEN_TRADES,
+                    cooldown=3, threshold=0.10 if conf_threshold <= 0 else conf_threshold,
+                    full_size_dca=True,
+                )
+            else:
+                trades = simulate_trades(
+                    df_test, signals,
+                    sl_mult=sl_mult, tp_mult=tp_mult,
+                    max_hold=24, max_open=config.MAX_OPEN_TRADES,
+                    cooldown=3, threshold=0.10 if conf_threshold <= 0 else conf_threshold,
+                )
             fold_trades.extend(trades)
 
         if fold_trades:
@@ -473,7 +483,13 @@ def run_volbars_backtest(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=187)
-    parser.add_argument("--train-bars", type=int, default=2000)
-    parser.add_argument("--test-bars", type=int, default=500)
+    parser.add_argument("--train-bars", type=int, default=1000)
+    parser.add_argument("--test-bars", type=int, default=300)
+    parser.add_argument("--conf", type=float, default=0.0, help="0=no ML, >0=ML filter")
+    parser.add_argument("--dca", action="store_true", help="Use DCA (1/3 sizing per entry)")
     args = parser.parse_args()
-    run_volbars_backtest(total_days=args.days, train_bars=args.train_bars, test_bars=args.test_bars)
+    run_volbars_backtest(
+        total_days=args.days, train_bars=args.train_bars,
+        test_bars=args.test_bars, conf_threshold=args.conf,
+        use_dca=args.dca,
+    )

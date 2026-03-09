@@ -227,6 +227,7 @@ def simulate_dca_trades(
     threshold: float = 0.10,
     pair_cooldown_sl: int = 2,
     pair_cooldown_bars: int = 8,
+    full_size_dca: bool = False,
 ) -> List[DcaTrade]:
     """DCA v2: 5 improvements to reduce HARD_SL losses."""
     trades: List[DcaTrade] = []
@@ -341,10 +342,11 @@ def simulate_dca_trades(
 
             if closed:
                 pos.exit_bar = bar_idx
+                size_mult = pos.total_size if full_size_dca else pos.total_size / max_entries
                 if pos.direction == "LONG":
-                    pos.pnl_pct = (pos.exit_price - pos.avg_price) / pos.avg_price * 100 * pos.total_size / max_entries
+                    pos.pnl_pct = (pos.exit_price - pos.avg_price) / pos.avg_price * 100 * size_mult
                 else:
-                    pos.pnl_pct = (pos.avg_price - pos.exit_price) / pos.avg_price * 100 * pos.total_size / max_entries
+                    pos.pnl_pct = (pos.avg_price - pos.exit_price) / pos.avg_price * 100 * size_mult
                 open_positions.remove(pos)
                 trades.append(pos)
                 cooldowns[pos.symbol] = bar_idx + cooldown
@@ -400,10 +402,11 @@ def simulate_dca_trades(
         pos.exit_bar = len(close) - 1
         pos.exit_price = close[-1]
         pos.exit_reason = "END"
+        size_mult = pos.total_size if full_size_dca else pos.total_size / max_entries
         if pos.direction == "LONG":
-            pos.pnl_pct = (pos.exit_price - pos.avg_price) / pos.avg_price * 100 * pos.total_size / max_entries
+            pos.pnl_pct = (pos.exit_price - pos.avg_price) / pos.avg_price * 100 * size_mult
         else:
-            pos.pnl_pct = (pos.avg_price - pos.exit_price) / pos.avg_price * 100 * pos.total_size / max_entries
+            pos.pnl_pct = (pos.avg_price - pos.exit_price) / pos.avg_price * 100 * size_mult
         trades.append(pos)
 
     return trades
