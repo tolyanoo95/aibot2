@@ -376,13 +376,21 @@ class VolumeBarsBot:
         if direction == "SHORT" and rsi_s6 > 0:
             return None
 
-        price = float(vdf["close"].iloc[j])
+        bar_close_price = float(vdf["close"].iloc[j])
         atr_val = float(atr[j])
+
+        # Get real-time price from exchange (not bar close)
+        try:
+            ticker = self.fetcher.exchange.fetch_ticker(symbol)
+            live_price = float(ticker["last"])
+        except Exception:
+            live_price = bar_close_price
 
         return {
             "symbol": symbol,
             "direction": direction,
-            "price": price,
+            "price": live_price,
+            "bar_close_price": bar_close_price,
             "atr": atr_val,
             "adx": adx,
             "roc_12": roc_12,
