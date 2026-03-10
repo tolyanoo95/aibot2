@@ -625,8 +625,26 @@ class VolumeBarsBot:
         # Save state to disk after every scan
         self._save_state()
 
+    @staticmethod
+    def _archive_logs():
+        """Move old logs to archive folder on startup."""
+        import shutil
+        from datetime import datetime
+
+        archive_dir = "logs_archive"
+        os.makedirs(archive_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        for fname in ("volbars_bot.log", "trades.log", "paper_trades.json"):
+            if os.path.exists(fname) and os.path.getsize(fname) > 0:
+                dest = os.path.join(archive_dir, f"{stamp}_{fname}")
+                shutil.copy2(fname, dest)
+                with open(fname, "w"):
+                    pass
+
     def run(self, once: bool = False):
         """Main loop."""
+        self._archive_logs()
         logger.info(f"Volume Bars Bot v{VERSION}")
         logger.info(f"Mode: {'PAPER' if self.paper else 'LIVE'}")
         logger.info(f"Params: SL={SL_MULT}x TP={TP_MULT}x ADX>{ADX_MIN} MaxOpen={MAX_OPEN} DCA={MAX_DCA}")
