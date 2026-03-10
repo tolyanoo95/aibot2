@@ -742,12 +742,22 @@ class VolumeBarsBot:
             self.scan()
             return
 
-        logger.info(f"Starting scan loop (every {SCAN_INTERVAL}s)...")
+        logger.info(f"Starting scan loop (aligned to 15m bar close)...")
         while True:
             try:
                 self.scan()
-                logger.info(f"  Next scan in {SCAN_INTERVAL}s...")
-                time.sleep(SCAN_INTERVAL)
+
+                # Wait until next 15m bar close (:00, :15, :30, :45) + 5 sec buffer
+                from datetime import datetime, timedelta
+                now = datetime.utcnow()
+                minutes = now.minute
+                next_bar = 15 - (minutes % 15)
+                if next_bar == 0:
+                    next_bar = 15
+                wait_until = now.replace(second=0, microsecond=0) + timedelta(minutes=next_bar, seconds=5)
+                wait_secs = max(10, (wait_until - datetime.utcnow()).total_seconds())
+                logger.info(f"  Next scan at {wait_until.strftime('%H:%M:%S')} UTC ({wait_secs:.0f}s)")
+                time.sleep(wait_secs)
             except KeyboardInterrupt:
                 logger.info("Stopping bot...")
                 break
