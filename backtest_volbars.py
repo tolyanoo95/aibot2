@@ -438,17 +438,20 @@ def run_volbars_backtest(
             wr = wins / len(fold_trades) * 100
             console.print(f"  Fold {fold}: {len(fold_trades)} trades, WR {wr:.0f}%, PnL {pnl:+.2f}%")
 
-        # Update global direction lock (only one direction locked at a time)
+        # Update global direction lock: DCA SL = strongest signal of wrong direction
         for tr in sorted(fold_trades, key=lambda x: getattr(x, 'exit_bar', getattr(x, 'first_bar', 0))):
             d = tr.direction
-            if tr.exit_reason in ("SL", "HARD_SL"):
-                global_sl_streak[d] += 1
-                if global_sl_streak[d] >= 2:
-                    global_locked_dir = d  # lock THIS direction
+            is_dca_sl = tr.exit_reason in ("SL", "HARD_SL") and hasattr(tr, 'total_size') and tr.total_size > 1
+            if is_dca_sl:
+                global_locked_dir = d  # 1 DCA SL = instant lock (strong signal)
             elif tr.exit_reason == "TP":
                 global_sl_streak[d] = 0
                 if global_locked_dir == d:
-                    global_locked_dir = None  # unlock if TP in locked direction
+                    global_locked_dir = None
+            elif tr.exit_reason in ("SL", "HARD_SL"):
+                global_sl_streak[d] += 1
+                if global_sl_streak[d] >= 2:
+                    global_locked_dir = d
 
         all_trades.extend(fold_trades)
         start += test_bars
