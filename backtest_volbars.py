@@ -146,6 +146,15 @@ def run_volbars_backtest(
             console.print(f"  [yellow]{symbol}: only {len(vdf)} vol bars, skipping[/yellow]")
             continue
 
+        # HTF volume bars (5x bigger threshold) for trend detection
+        htf_vdf = resample_to_volume_bars(df, initial_threshold=df["volume"].iloc[:1920].median() * 10 if len(df) > 1920 else df["volume"].median() * 10)
+        if len(htf_vdf) > 20:
+            htf_vdf = indicators.calculate_all(htf_vdf)
+            # Forward-fill HTF EMA to primary volume bar timestamps
+            for col in ["ema_9", "ema_21", "ema_50"]:
+                if col in htf_vdf.columns:
+                    vdf[f"htf_{col}"] = htf_vdf[col].reindex(vdf.index, method="ffill")
+
         vdf = indicators.calculate_all(vdf)
 
         # Replace volume bar ATR with time bar ATR (forward-filled to volume bar timestamps)
@@ -346,6 +355,17 @@ def run_volbars_backtest(
 
                 conf = 0
                 if direction != "NEUTRAL":
+                    # HTF volume bars trend filter
+                    htf_e9 = float(df_test["htf_ema_9"].iloc[j]) if "htf_ema_9" in df_test.columns else 0
+                    htf_e21 = float(df_test["htf_ema_21"].iloc[j]) if "htf_ema_21" in df_test.columns else 0
+                    if htf_e9 > 0 and htf_e21 > 0:
+                        htf_downtrend = htf_e9 < htf_e21
+                        htf_uptrend = htf_e9 > htf_e21
+                        if direction == "LONG" and htf_downtrend:
+                            direction = "NEUTRAL"; continue
+                        if direction == "SHORT" and htf_uptrend:
+                            direction = "NEUTRAL"; continue
+
                     # Guard: volatility filter
                     atr_exp = atr_test[j] / atr_ma20[j] if atr_ma20[j] > 0 else 1.0
                     if atr_exp > 1.5:
