@@ -205,18 +205,32 @@ class VolumeBarsBot:
             return False
 
     def initialize(self):
-        """Load saved state or build from scratch."""
-        if self._load_state():
-            logger.info(f"Resumed from saved state!")
-            # Still need time_data for ATR updates
-            logger.info(f"Fetching time bars for ATR...")
-            for symbol in list(self.vol_bars.keys()):
-                df = self.fetcher.fetch_ohlcv_extended(symbol, "15m", total_candles=500)
-                if not df.empty:
-                    self.time_data[symbol] = self.indicators.calculate_all(df)
-            return
+        """Always fetch fresh data. Load only positions/lock from saved state."""
+        # Load positions + global lock (but NOT volume bars)
+        state_path = os.path.join(self._data_dir, "state.json")
+        if os.path.exists(state_path):
+            import json
+            try:
+                with open(state_path) as f:
+                    state = json.load(f)
+                self.global_locked_dir = state.get("global_locked_dir")
+                self.global_sl_streak = state.get("global_sl_streak", {"LONG": 0, "SHORT": 0})
+                self.scan_count = state.get("scan_count", 0)
+                self.cooldowns = state.get("cooldowns", {})
+                for p_data in state.get("positions", []):
+                    pos = Position(
+                        symbol=p_data["symbol"], direction=p_data["direction"],
+                        entries=p_data["entries"], avg_price=p_data["avg_price"],
+                        total_size=p_data["total_size"], hard_sl=p_data["hard_sl"],
+                        tp=p_data["tp"], entry_time=p_data.get("entry_time", 0),
+                        bars_held=p_data.get("bars_held", 0),
+                    )
+                    self.positions.append(pos)
+                logger.info(f"  Loaded {len(self.positions)} positions, lock={self.global_locked_dir}")
+            except Exception as e:
+                logger.error(f"  State load error: {e}")
 
-        logger.info(f"No saved state. Initializing with {WARMUP_DAYS} days of data...")
+        logger.info(f"Fetching fresh {WARMUP_DAYS} days of data...")
         total_candles = WARMUP_DAYS * 96
 
         for symbol in self.pairs:
