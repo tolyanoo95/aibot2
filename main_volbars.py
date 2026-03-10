@@ -400,21 +400,42 @@ class VolumeBarsBot:
                 if self.paper:
                     logger.info(f"  [PAPER] Position closed")
 
+    def _scan_pair(self, symbol: str) -> Optional[dict]:
+        """Scan single pair: update vol bar + check signal. Thread-safe read."""
+        try:
+            new_bar = self.update_volume_bars(symbol)
+            if new_bar:
+                return self.check_signal(symbol)
+        except Exception as e:
+            logger.error(f"Error scanning {symbol}: {e}")
+        return None
+
     def scan(self):
-        """Run one scan cycle."""
+        """Run one scan cycle — all pairs in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         self.scan_count += 1
         logger.info(f"\n{'='*50}")
         logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)} | Lock: {self.global_locked_dir or 'none'}")
 
-        new_bars = 0
-        for symbol in list(self.vol_bars.keys()):
-            if self.update_volume_bars(symbol):
-                new_bars += 1
+        signals = []
+        symbols = list(self.vol_bars.keys())
 
-                signal = self.check_signal(symbol)
-                if signal:
-                    logger.info(f"  SIGNAL: {signal['direction']} {symbol} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
-                    self.open_position(signal)
+        with ThreadPoolExecutor(max_workers=len(symbols)) as pool:
+            futures = {pool.submit(self._scan_pair, sym): sym for sym in symbols}
+            for future in as_completed(futures):
+                sym = futures[future]
+                try:
+                    signal = future.result()
+                    if signal:
+                        signals.append(signal)
+                except Exception as e:
+                    logger.error(f"Scan error {sym}: {e}")
+
+        # Process signals sequentially (position management not thread-safe)
+        for signal in signals:
+            logger.info(f"  SIGNAL: {signal['direction']} {signal['symbol']} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
+            self.open_position(signal)
 
         self.check_positions()
 
@@ -432,7 +453,7 @@ class VolumeBarsBot:
                     f"now={current:.2f} PnL={unrealized:+.2f}% bars={pos.bars_held} dca={pos.total_size}"
                 )
 
-        logger.info(f"  New vol bars: {new_bars} | Total pairs: {len(self.vol_bars)}")
+        logger.info(f"  Signals: {len(signals)} | Total pairs: {len(self.vol_bars)}")
 
     def run(self, once: bool = False):
         """Main loop."""
