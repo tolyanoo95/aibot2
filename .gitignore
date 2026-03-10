@@ -27,3 +27,4 @@ logs_archive/
 ensemble_*.cbm
 ensemble_*.pkl
 ensemble_*.json
+data/

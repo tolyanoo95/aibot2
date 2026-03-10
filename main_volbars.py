@@ -100,10 +100,121 @@ class VolumeBarsBot:
 
         # Thread lock for shared resources (positions, global_lock, cooldowns)
         self._lock = threading.Lock()
+        self._data_dir = "data/volbars"
+        os.makedirs(self._data_dir, exist_ok=True)
+
+    def _save_state(self):
+        """Save volume bars, positions, and bot state to disk."""
+        import json
+        try:
+            import pickle
+            # Save volume bars per symbol (pickle for reliability with duplicate cols)
+            for symbol, vdf in self.vol_bars.items():
+                fname = symbol.replace("/", "_").replace(":", "_")
+                with open(os.path.join(self._data_dir, f"{fname}_volbars.pkl"), "wb") as f:
+                    pickle.dump(vdf, f)
+
+            # Save thresholds
+            with open(os.path.join(self._data_dir, "thresholds.json"), "w") as f:
+                json.dump(self.vol_thresholds, f)
+
+            # Save bot state
+            state = {
+                "global_locked_dir": self.global_locked_dir,
+                "global_sl_streak": self.global_sl_streak,
+                "scan_count": self.scan_count,
+                "cooldowns": self.cooldowns,
+                "positions": [
+                    {
+                        "symbol": p.symbol, "direction": p.direction,
+                        "entries": p.entries, "avg_price": p.avg_price,
+                        "total_size": p.total_size, "hard_sl": p.hard_sl,
+                        "tp": p.tp, "entry_time": p.entry_time, "bars_held": p.bars_held,
+                    } for p in self.positions
+                ],
+                "vol_buffers": {k: {kk: (vv if not isinstance(vv, pd.Timestamp) else str(vv))
+                                    for kk, vv in v.items()} for k, v in self.vol_buffers.items()},
+            }
+            with open(os.path.join(self._data_dir, "state.json"), "w") as f:
+                json.dump(state, f, indent=2, default=str)
+
+            logger.info(f"  State saved to {self._data_dir}/")
+        except Exception as e:
+            logger.error(f"Save error: {e}")
+
+    def _load_state(self) -> bool:
+        """Load saved state from disk. Returns True if loaded successfully."""
+        import json
+        state_path = os.path.join(self._data_dir, "state.json")
+        if not os.path.exists(state_path):
+            return False
+
+        try:
+            # Load volume bars
+            import pickle
+            loaded = 0
+            for symbol in self.pairs:
+                fname = symbol.replace("/", "_").replace(":", "_")
+                vb_path = os.path.join(self._data_dir, f"{fname}_volbars.pkl")
+                if os.path.exists(vb_path):
+                    with open(vb_path, "rb") as f:
+                        vdf = pickle.load(f)
+                    if len(vdf) > 50:
+                        self.vol_bars[symbol] = vdf
+                        loaded += 1
+
+            # Load thresholds
+            th_path = os.path.join(self._data_dir, "thresholds.json")
+            if os.path.exists(th_path):
+                with open(th_path) as f:
+                    self.vol_thresholds = json.load(f)
+
+            # Load state
+            with open(state_path) as f:
+                state = json.load(f)
+
+            self.global_locked_dir = state.get("global_locked_dir")
+            self.global_sl_streak = state.get("global_sl_streak", {"LONG": 0, "SHORT": 0})
+            self.scan_count = state.get("scan_count", 0)
+            self.cooldowns = state.get("cooldowns", {})
+
+            for p_data in state.get("positions", []):
+                pos = Position(
+                    symbol=p_data["symbol"], direction=p_data["direction"],
+                    entries=p_data["entries"], avg_price=p_data["avg_price"],
+                    total_size=p_data["total_size"], hard_sl=p_data["hard_sl"],
+                    tp=p_data["tp"], entry_time=p_data.get("entry_time", 0),
+                    bars_held=p_data.get("bars_held", 0),
+                )
+                self.positions.append(pos)
+
+            # Init vol buffers
+            for symbol in self.vol_bars:
+                self.vol_buffers[symbol] = {
+                    "cum_vol": 0, "bar_open": None, "bar_high": None,
+                    "bar_low": None, "bar_start": None,
+                }
+
+            logger.info(f"  Loaded state: {loaded} pairs, {len(self.positions)} positions, lock={self.global_locked_dir}")
+            return loaded > 0
+
+        except Exception as e:
+            logger.error(f"Load error: {e}")
+            return False
 
     def initialize(self):
-        """Load historical data and build volume bars."""
-        logger.info(f"Initializing with {WARMUP_DAYS} days of data...")
+        """Load saved state or build from scratch."""
+        if self._load_state():
+            logger.info(f"Resumed from saved state!")
+            # Still need time_data for ATR updates
+            logger.info(f"Fetching time bars for ATR...")
+            for symbol in list(self.vol_bars.keys()):
+                df = self.fetcher.fetch_ohlcv_extended(symbol, "15m", total_candles=500)
+                if not df.empty:
+                    self.time_data[symbol] = self.indicators.calculate_all(df)
+            return
+
+        logger.info(f"No saved state. Initializing with {WARMUP_DAYS} days of data...")
         total_candles = WARMUP_DAYS * 96
 
         for symbol in self.pairs:
@@ -466,6 +577,9 @@ class VolumeBarsBot:
                 )
 
         logger.info(f"  Positions: {len(self.positions)} | Total pairs: {len(self.vol_bars)}")
+
+        # Save state to disk after every scan
+        self._save_state()
 
     def run(self, once: bool = False):
         """Main loop."""
