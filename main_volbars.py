@@ -535,7 +535,12 @@ class VolumeBarsBot:
                 if vdf is None or len(vdf) < 2:
                     continue
 
-                current_price = float(vdf["close"].iloc[-1])
+                # Use live price for current, bar high/low for SL/TP check
+                try:
+                    ticker = self.fetcher.exchange.fetch_ticker(pos.symbol)
+                    current_price = float(ticker["last"])
+                except Exception:
+                    current_price = float(vdf["close"].iloc[-1])
                 current_high = float(vdf["high"].iloc[-1])
                 current_low = float(vdf["low"].iloc[-1])
                 pos.bars_held += 1
