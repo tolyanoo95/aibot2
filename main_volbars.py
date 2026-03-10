@@ -80,6 +80,7 @@ class Position:
 
 class VolumeBarsBot:
     def __init__(self, paper: bool = True):
+        import threading
         self.paper = paper
         self.fetcher = BinanceDataFetcher(config)
         self.indicators = TechnicalIndicators()
@@ -96,6 +97,9 @@ class VolumeBarsBot:
         self.global_locked_dir: Optional[str] = None
         self.global_sl_streak = {"LONG": 0, "SHORT": 0}
         self.scan_count = 0
+
+        # Thread lock for shared resources (positions, global_lock, cooldowns)
+        self._lock = threading.Lock()
 
     def initialize(self):
         """Load historical data and build volume bars."""
@@ -331,113 +335,121 @@ class VolumeBarsBot:
         if self.paper:
             logger.info(f"  [PAPER] Position opened")
 
-    def check_positions(self):
-        """Check SL/TP/timeout for all open positions."""
-        for pos in list(self.positions):
-            vdf = self.vol_bars.get(pos.symbol)
-            if vdf is None or len(vdf) < 2:
-                continue
+    # Old check_positions removed — replaced by _check_pair_positions (per-pair, thread-safe)
 
-            current_price = float(vdf["close"].iloc[-1])
-            current_high = float(vdf["high"].iloc[-1])
-            current_low = float(vdf["low"].iloc[-1])
-            pos.bars_held += 1
+    def _process_pair(self, symbol: str):
+        """Fully independent pair processing: scan + signal + open + close. Runs in own thread."""
+        try:
+            # 1. Update volume bars (pair-specific data, no lock needed)
+            new_bar = self.update_volume_bars(symbol)
+            if not new_bar:
+                # Still check existing positions for this pair
+                self._check_pair_positions(symbol)
+                return
 
-            hit_tp = hit_sl = False
-            if pos.direction == "LONG":
-                hit_tp = current_high >= pos.tp
-                hit_sl = current_low <= pos.hard_sl
-            else:
-                hit_tp = current_low <= pos.tp
-                hit_sl = current_high >= pos.hard_sl
+            # 2. Check signal (reads shared global_locked_dir but doesn't modify)
+            signal = self.check_signal(symbol)
 
-            exit_reason = None
-            exit_price = current_price
+            # 3. Open position if signal (needs lock for shared state)
+            if signal:
+                logger.info(f"  SIGNAL: {signal['direction']} {signal['symbol']} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
+                with self._lock:
+                    self.open_position(signal)
 
-            if hit_sl and hit_tp:
-                exit_reason = "HARD_SL"
-                exit_price = pos.hard_sl
-            elif hit_sl:
-                exit_reason = "HARD_SL"
-                exit_price = pos.hard_sl
-            elif hit_tp:
-                exit_reason = "TP"
-                exit_price = pos.tp
-            elif pos.bars_held >= 24:
-                exit_reason = "TIMEOUT"
+            # 4. Check positions for this pair (needs lock)
+            self._check_pair_positions(symbol)
+
+        except Exception as e:
+            logger.error(f"Error processing {symbol}: {e}")
+
+    def _check_pair_positions(self, symbol: str):
+        """Check SL/TP/timeout for positions of this specific pair."""
+        with self._lock:
+            for pos in list(self.positions):
+                if pos.symbol != symbol:
+                    continue
+
+                vdf = self.vol_bars.get(pos.symbol)
+                if vdf is None or len(vdf) < 2:
+                    continue
+
+                current_price = float(vdf["close"].iloc[-1])
+                current_high = float(vdf["high"].iloc[-1])
+                current_low = float(vdf["low"].iloc[-1])
+                pos.bars_held += 1
+
+                hit_tp = hit_sl = False
+                if pos.direction == "LONG":
+                    hit_tp = current_high >= pos.tp
+                    hit_sl = current_low <= pos.hard_sl
+                else:
+                    hit_tp = current_low <= pos.tp
+                    hit_sl = current_high >= pos.hard_sl
+
+                exit_reason = None
                 exit_price = current_price
 
-            if exit_reason:
-                if pos.direction == "LONG":
-                    pnl_pct = (exit_price - pos.avg_price) / pos.avg_price * 100 * pos.total_size
-                else:
-                    pnl_pct = (pos.avg_price - exit_price) / pos.avg_price * 100 * pos.total_size
+                if hit_sl and hit_tp:
+                    exit_reason = "HARD_SL"
+                    exit_price = pos.hard_sl
+                elif hit_sl:
+                    exit_reason = "HARD_SL"
+                    exit_price = pos.hard_sl
+                elif hit_tp:
+                    exit_reason = "TP"
+                    exit_price = pos.tp
+                elif pos.bars_held >= 24:
+                    exit_reason = "TIMEOUT"
+                    exit_price = current_price
 
-                logger.info(
-                    f"  CLOSE {pos.direction} {pos.symbol} @ {exit_price:.2f} "
-                    f"| {exit_reason} | PnL {pnl_pct:+.2f}% | Bars: {pos.bars_held} | DCA: {pos.total_size}"
-                )
+                if exit_reason:
+                    if pos.direction == "LONG":
+                        pnl_pct = (exit_price - pos.avg_price) / pos.avg_price * 100 * pos.total_size
+                    else:
+                        pnl_pct = (pos.avg_price - exit_price) / pos.avg_price * 100 * pos.total_size
 
-                # Update global direction lock
-                is_dca_sl = exit_reason == "HARD_SL" and pos.total_size > 1
-                if is_dca_sl:
-                    self.global_locked_dir = pos.direction
-                    logger.info(f"  LOCK {pos.direction} (DCA SL)")
-                elif exit_reason == "HARD_SL":
-                    self.global_sl_streak[pos.direction] += 1
-                    if self.global_sl_streak[pos.direction] >= 2:
+                    logger.info(
+                        f"  CLOSE {pos.direction} {pos.symbol} @ {exit_price:.2f} "
+                        f"| {exit_reason} | PnL {pnl_pct:+.2f}% | Bars: {pos.bars_held} | DCA: {pos.total_size}"
+                    )
+
+                    # Update global direction lock
+                    is_dca_sl = exit_reason == "HARD_SL" and pos.total_size > 1
+                    if is_dca_sl:
                         self.global_locked_dir = pos.direction
-                        logger.info(f"  LOCK {pos.direction} (2 SL streak)")
-                elif exit_reason == "TP":
-                    self.global_sl_streak[pos.direction] = 0
-                    if self.global_locked_dir == pos.direction:
-                        self.global_locked_dir = None
-                        logger.info(f"  UNLOCK {pos.direction}")
+                        logger.info(f"  LOCK {pos.direction} (DCA SL)")
+                    elif exit_reason == "HARD_SL":
+                        self.global_sl_streak[pos.direction] += 1
+                        if self.global_sl_streak[pos.direction] >= 2:
+                            self.global_locked_dir = pos.direction
+                            logger.info(f"  LOCK {pos.direction} (2 SL streak)")
+                    elif exit_reason == "TP":
+                        self.global_sl_streak[pos.direction] = 0
+                        if self.global_locked_dir == pos.direction:
+                            self.global_locked_dir = None
+                            logger.info(f"  UNLOCK {pos.direction}")
 
-                self.positions.remove(pos)
-                self.cooldowns[pos.symbol] = self.scan_count + COOLDOWN_BARS
-
-                if self.paper:
-                    logger.info(f"  [PAPER] Position closed")
-
-    def _scan_pair(self, symbol: str) -> Optional[dict]:
-        """Scan single pair: update vol bar + check signal. Thread-safe read."""
-        try:
-            new_bar = self.update_volume_bars(symbol)
-            if new_bar:
-                return self.check_signal(symbol)
-        except Exception as e:
-            logger.error(f"Error scanning {symbol}: {e}")
-        return None
+                    self.positions.remove(pos)
+                    self.cooldowns[pos.symbol] = self.scan_count + COOLDOWN_BARS
 
     def scan(self):
-        """Run one scan cycle — all pairs in parallel."""
+        """Run one scan cycle — each pair fully independent in its own thread."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         self.scan_count += 1
         logger.info(f"\n{'='*50}")
         logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)} | Lock: {self.global_locked_dir or 'none'}")
 
-        signals = []
         symbols = list(self.vol_bars.keys())
 
         with ThreadPoolExecutor(max_workers=len(symbols)) as pool:
-            futures = {pool.submit(self._scan_pair, sym): sym for sym in symbols}
+            futures = {pool.submit(self._process_pair, sym): sym for sym in symbols}
             for future in as_completed(futures):
                 sym = futures[future]
                 try:
-                    signal = future.result()
-                    if signal:
-                        signals.append(signal)
+                    future.result()
                 except Exception as e:
-                    logger.error(f"Scan error {sym}: {e}")
-
-        # Process signals sequentially (position management not thread-safe)
-        for signal in signals:
-            logger.info(f"  SIGNAL: {signal['direction']} {signal['symbol']} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
-            self.open_position(signal)
-
-        self.check_positions()
+                    logger.error(f"Error {sym}: {e}")
 
         # Status
         for pos in self.positions:
@@ -453,7 +465,7 @@ class VolumeBarsBot:
                     f"now={current:.2f} PnL={unrealized:+.2f}% bars={pos.bars_held} dca={pos.total_size}"
                 )
 
-        logger.info(f"  Signals: {len(signals)} | Total pairs: {len(self.vol_bars)}")
+        logger.info(f"  Positions: {len(self.positions)} | Total pairs: {len(self.vol_bars)}")
 
     def run(self, once: bool = False):
         """Main loop."""
