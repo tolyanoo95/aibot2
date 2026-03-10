@@ -102,6 +102,8 @@ class VolumeBarsBot:
         self._lock = threading.Lock()
         self._data_dir = "data/volbars"
         os.makedirs(self._data_dir, exist_ok=True)
+        self._trades_log = "trades.log"
+        self._paper_trades_file = "paper_trades.json"
 
     def _save_state(self):
         """Save volume bars, positions, and bot state to disk."""
@@ -443,10 +445,51 @@ class VolumeBarsBot:
         self.positions.append(pos)
 
         logger.info(f"  OPEN {direction} {symbol} @ {price:.2f} | SL={hard_sl:.2f} TP={tp:.2f} ATR={atr_val:.2f}")
-        if self.paper:
-            logger.info(f"  [PAPER] Position opened")
+        self._log_trade_open(signal, pos)
 
-    # Old check_positions removed — replaced by _check_pair_positions (per-pair, thread-safe)
+    def _log_trade_open(self, signal: dict, pos: Position):
+        """Log trade open to trades.log."""
+        from datetime import datetime
+        line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} OPEN {pos.direction} {pos.symbol} @ {pos.avg_price:.4f} SL={pos.hard_sl:.4f} TP={pos.tp:.4f} ATR={signal['atr']:.4f} ADX={signal.get('adx',0):.0f} roc={signal.get('roc_12',0):.2f}%\n"
+        with open(self._trades_log, "a") as f:
+            f.write(line)
+
+    def _log_trade_close(self, pos: Position, exit_price: float, exit_reason: str, pnl_pct: float):
+        """Log trade close to trades.log + append to paper_trades.json."""
+        import json
+        from datetime import datetime
+
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # trades.log
+        line = f"{now} CLOSE {pos.direction} {pos.symbol} @ {exit_price:.4f} | {exit_reason} | PnL {pnl_pct:+.2f}% | DCA:{pos.total_size} | Bars:{pos.bars_held}\n"
+        with open(self._trades_log, "a") as f:
+            f.write(line)
+
+        # paper_trades.json
+        trade_record = {
+            "symbol": pos.symbol,
+            "direction": pos.direction,
+            "entry_price": pos.avg_price,
+            "exit_price": exit_price,
+            "pnl_pct": round(pnl_pct, 4),
+            "exit_reason": exit_reason,
+            "dca_entries": pos.total_size,
+            "bars_held": pos.bars_held,
+            "entry_time": datetime.fromtimestamp(pos.entry_time).strftime('%Y-%m-%d %H:%M:%S') if pos.entry_time else "",
+            "exit_time": now,
+        }
+
+        trades = []
+        if os.path.exists(self._paper_trades_file):
+            try:
+                with open(self._paper_trades_file) as f:
+                    trades = json.load(f)
+            except Exception:
+                trades = []
+        trades.append(trade_record)
+        with open(self._paper_trades_file, "w") as f:
+            json.dump(trades, f, indent=2)
 
     def _process_pair(self, symbol: str):
         """Fully independent pair processing: scan + signal + open + close. Runs in own thread."""
@@ -540,6 +583,7 @@ class VolumeBarsBot:
                             self.global_locked_dir = None
                             logger.info(f"  UNLOCK {pos.direction}")
 
+                    self._log_trade_close(pos, exit_price, exit_reason, pnl_pct)
                     self.positions.remove(pos)
                     self.cooldowns[pos.symbol] = self.scan_count + COOLDOWN_BARS
 
