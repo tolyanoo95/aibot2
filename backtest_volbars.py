@@ -378,6 +378,11 @@ def run_volbars_backtest(
                     if atr_exp > 1.5:
                         direction = "NEUTRAL"; continue
 
+                    # Guard: ADX (trade only when trend exists)
+                    adx_val = float(df_test["ADX_14"].iloc[j]) if "ADX_14" in df_test.columns else 25
+                    if adx_val < 25:
+                        direction = "NEUTRAL"; continue
+
                     # Guard: rsi_slope (momentum alive?)
                     rsi_s6 = float(df_test["rsi"].diff(6).iloc[j]) if "rsi" in df_test.columns else 0
                     if direction == "LONG" and rsi_s6 < 0:
