@@ -290,7 +290,7 @@ class VolumeBarsBot:
             if symbol in self.time_data:
                 self.time_data[symbol] = pd.concat([self.time_data[symbol], df_new.iloc[[-1]]])
                 self.time_data[symbol] = self.time_data[symbol][~self.time_data[symbol].index.duplicated(keep='last')]
-                self.time_data[symbol] = self.indicators.calculate_all(self.time_data[symbol].tail(500))
+                self.time_data[symbol] = self.indicators.calculate_all(self.time_data[symbol].tail(1000))
 
             if buf["bar_open"] is None:
                 buf["bar_open"] = latest["open"]
@@ -316,7 +316,7 @@ class VolumeBarsBot:
                 self.vol_bars[symbol] = pd.concat([self.vol_bars[symbol], new_bar])
                 self.vol_bars[symbol] = self.vol_bars[symbol][~self.vol_bars[symbol].index.duplicated(keep='last')]
                 self.vol_bars[symbol] = self.indicators.calculate_all(
-                    self.vol_bars[symbol].tail(500)
+                    self.vol_bars[symbol].tail(1000)
                 )
 
                 # Update ATR from time bars
