@@ -430,9 +430,7 @@ class VolumeBarsBot:
                 pos.avg_price = sum(e[0] for e in pos.entries) / pos.total_size
                 pos.tp = pos.avg_price + TP_MULT * atr_val if direction == "LONG" else pos.avg_price - TP_MULT * atr_val
                 logger.info(f"  DCA #{pos.total_size} {symbol} {direction} @ {price:.2f} (avg: {pos.avg_price:.2f})")
-
-                if self.paper:
-                    logger.info(f"  [PAPER] DCA entry {symbol}")
+                self._log_dca_entry(pos, price, signal)
             return
 
         # New position
@@ -454,6 +452,39 @@ class VolumeBarsBot:
 
         logger.info(f"  OPEN {direction} {symbol} @ {price:.2f} | SL={hard_sl:.2f} TP={tp:.2f} ATR={atr_val:.2f}")
         self._log_trade_open(signal, pos)
+
+    def _log_dca_entry(self, pos: Position, price: float, signal: dict):
+        """Log DCA entry to trades.log + update paper_trades.json."""
+        import json
+        from datetime import datetime
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # trades.log
+        line = f"{now} DCA #{pos.total_size} {pos.direction} {pos.symbol} @ {price:.4f} avg={pos.avg_price:.4f} TP={pos.tp:.4f}\n"
+        with open(self._trades_log, "a") as f:
+            f.write(line)
+
+        # paper_trades.json — add DCA event
+        trade_record = {
+            "type": "DCA",
+            "symbol": pos.symbol,
+            "direction": pos.direction,
+            "dca_number": pos.total_size,
+            "entry_price": price,
+            "avg_price": pos.avg_price,
+            "new_tp": pos.tp,
+            "time": now,
+        }
+        trades = []
+        if os.path.exists(self._paper_trades_file):
+            try:
+                with open(self._paper_trades_file) as f:
+                    trades = json.load(f)
+            except Exception:
+                trades = []
+        trades.append(trade_record)
+        with open(self._paper_trades_file, "w") as f:
+            json.dump(trades, f, indent=2)
 
     def _log_trade_open(self, signal: dict, pos: Position):
         """Log trade open to trades.log."""
