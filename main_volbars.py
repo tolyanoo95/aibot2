@@ -57,7 +57,7 @@ LONG_MOM = 0.30
 SHORT_MOM = 0.10
 ADX_MIN = 25
 ATR_EXP_MAX = 1.5
-MAX_OPEN = 2
+MAX_OPEN = 11
 MAX_DCA = 3
 DCA_STEP_MULT = 1.0
 COOLDOWN_BARS = 3
@@ -76,6 +76,7 @@ class Position:
     tp: float = 0.0
     entry_time: float = 0.0
     bars_held: int = 0
+    entry_atr: float = 0.0
 
 
 class VolumeBarsBot:
@@ -97,6 +98,11 @@ class VolumeBarsBot:
         self.global_locked_dir: Optional[str] = None
         self.global_sl_streak = {"LONG": 0, "SHORT": 0}
         self.scan_count = 0
+        self.pair_sl_streaks: Dict[str, int] = {}
+        self.pair_dir_cooldowns: Dict[str, int] = {}
+        self.PAIR_COOLDOWN_SL = 2
+        self.PAIR_COOLDOWN_BARS = 8
+        self.vol_bar_counts: Dict[str, int] = {}
 
         # Thread lock for shared resources (positions, global_lock, cooldowns)
         self._lock = threading.Lock()
@@ -126,12 +132,16 @@ class VolumeBarsBot:
                 "global_sl_streak": self.global_sl_streak,
                 "scan_count": self.scan_count,
                 "cooldowns": self.cooldowns,
+                "pair_sl_streaks": self.pair_sl_streaks,
+                "pair_dir_cooldowns": self.pair_dir_cooldowns,
+                "vol_bar_counts": self.vol_bar_counts,
                 "positions": [
                     {
                         "symbol": p.symbol, "direction": p.direction,
                         "entries": p.entries, "avg_price": p.avg_price,
                         "total_size": p.total_size, "hard_sl": p.hard_sl,
                         "tp": p.tp, "entry_time": p.entry_time, "bars_held": p.bars_held,
+                        "entry_atr": p.entry_atr,
                     } for p in self.positions
                 ],
                 "vol_buffers": {k: {kk: (vv if not isinstance(vv, pd.Timestamp) else str(vv))
@@ -179,6 +189,9 @@ class VolumeBarsBot:
             self.global_sl_streak = state.get("global_sl_streak", {"LONG": 0, "SHORT": 0})
             self.scan_count = state.get("scan_count", 0)
             self.cooldowns = state.get("cooldowns", {})
+            self.pair_sl_streaks = state.get("pair_sl_streaks", {})
+            self.pair_dir_cooldowns = state.get("pair_dir_cooldowns", {})
+            self.vol_bar_counts = state.get("vol_bar_counts", {})
 
             for p_data in state.get("positions", []):
                 pos = Position(
@@ -187,6 +200,7 @@ class VolumeBarsBot:
                     total_size=p_data["total_size"], hard_sl=p_data["hard_sl"],
                     tp=p_data["tp"], entry_time=p_data.get("entry_time", 0),
                     bars_held=p_data.get("bars_held", 0),
+                    entry_atr=p_data.get("entry_atr", 0),
                 )
                 self.positions.append(pos)
 
@@ -217,6 +231,9 @@ class VolumeBarsBot:
                 self.global_sl_streak = state.get("global_sl_streak", {"LONG": 0, "SHORT": 0})
                 self.scan_count = state.get("scan_count", 0)
                 self.cooldowns = state.get("cooldowns", {})
+                self.pair_sl_streaks = state.get("pair_sl_streaks", {})
+                self.pair_dir_cooldowns = state.get("pair_dir_cooldowns", {})
+                self.vol_bar_counts = state.get("vol_bar_counts", {})
                 for p_data in state.get("positions", []):
                     pos = Position(
                         symbol=p_data["symbol"], direction=p_data["direction"],
@@ -224,6 +241,7 @@ class VolumeBarsBot:
                         total_size=p_data["total_size"], hard_sl=p_data["hard_sl"],
                         tp=p_data["tp"], entry_time=p_data.get("entry_time", 0),
                         bars_held=p_data.get("bars_held", 0),
+                        entry_atr=p_data.get("entry_atr", 0),
                     )
                     self.positions.append(pos)
                 logger.info(f"  Loaded {len(self.positions)} positions, lock={self.global_locked_dir}")
@@ -268,6 +286,14 @@ class VolumeBarsBot:
 
             # Init volume buffer for incremental updates
             self.vol_buffers[symbol] = {
+                "cum_vol": 0, "bar_open": None, "bar_high": None,
+                "bar_low": None, "bar_start": None,
+            }
+
+            # Init HTF volume buffer for incremental updates
+            if not hasattr(self, '_htf_buffers'):
+                self._htf_buffers = {}
+            self._htf_buffers[symbol] = {
                 "cum_vol": 0, "bar_open": None, "bar_high": None,
                 "bar_low": None, "bar_start": None,
             }
@@ -325,6 +351,34 @@ class VolumeBarsBot:
                         self.vol_bars[symbol].index, method="ffill"
                     )
                     self.vol_bars[symbol]["atr"] = time_atr.values
+
+                # Update HTF volume bars (5x threshold)
+                if symbol in self.htf_vol_bars:
+                    htf_threshold = self.vol_thresholds.get(symbol, 2000) * 5
+                    htf_buf = getattr(self, '_htf_buffers', {}).get(symbol, {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None})
+                    if htf_buf["bar_open"] is None:
+                        htf_buf["bar_open"] = buf["bar_open"]
+                        htf_buf["bar_high"] = buf["bar_high"]
+                        htf_buf["bar_low"] = buf["bar_low"]
+                        htf_buf["bar_start"] = buf["bar_start"]
+                    htf_buf["bar_high"] = max(htf_buf["bar_high"], float(latest["high"]))
+                    htf_buf["bar_low"] = min(htf_buf["bar_low"], float(latest["low"]))
+                    htf_buf["cum_vol"] += buf["cum_vol"]
+                    if htf_buf["cum_vol"] >= htf_threshold:
+                        htf_bar = pd.DataFrame([{
+                            "open": htf_buf["bar_open"], "high": htf_buf["bar_high"],
+                            "low": htf_buf["bar_low"], "close": float(latest["close"]),
+                            "volume": htf_buf["cum_vol"],
+                        }], index=[htf_buf["bar_start"]])
+                        self.htf_vol_bars[symbol] = pd.concat([self.htf_vol_bars[symbol], htf_bar]).tail(200)
+                        self.htf_vol_bars[symbol] = self.indicators.calculate_all(self.htf_vol_bars[symbol])
+                        for col in ["ema_9", "ema_21", "ema_50"]:
+                            if col in self.htf_vol_bars[symbol].columns:
+                                self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(self.vol_bars[symbol].index, method="ffill")
+                        htf_buf = {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None}
+                    if not hasattr(self, '_htf_buffers'):
+                        self._htf_buffers = {}
+                    self._htf_buffers[symbol] = htf_buf
 
                 # Reset buffer
                 buf["cum_vol"] = 0
@@ -420,34 +474,22 @@ class VolumeBarsBot:
         price = signal["price"]
         atr_val = signal["atr"]
 
-        # Check cooldown
-        if self.cooldowns.get(symbol, 0) > self.scan_count:
+        # Check cooldown (in volume bar units per pair, like backtest)
+        pair_vb = self.vol_bar_counts.get(symbol, 0)
+        if self.cooldowns.get(symbol, 0) > pair_vb:
             return
 
-        # Check max open
+        # Per-pair per-direction cooldown (like backtest)
+        pair_dir_key = f"{symbol}_{direction}"
+        if self.pair_dir_cooldowns.get(pair_dir_key, 0) > pair_vb:
+            return
+
+        # Skip if already have position on this symbol (DCA handled separately in _try_dca)
+        if any(p.symbol == symbol for p in self.positions):
+            return
+
+        # Max open check for NEW positions only
         if len(self.positions) >= MAX_OPEN:
-            return
-
-        # Check if already have position on this symbol
-        existing = [p for p in self.positions if p.symbol == symbol]
-        if existing:
-            pos = existing[0]
-            if pos.direction != direction:
-                return
-            if pos.total_size >= MAX_DCA:
-                return
-
-            # DCA: add entry
-            dca_level = pos.entries[0][0] - pos.total_size * DCA_STEP_MULT * atr_val if direction == "LONG" \
-                else pos.entries[0][0] + pos.total_size * DCA_STEP_MULT * atr_val
-
-            if (direction == "LONG" and price <= dca_level) or (direction == "SHORT" and price >= dca_level):
-                pos.entries.append((price, time.time()))
-                pos.total_size += 1
-                pos.avg_price = sum(e[0] for e in pos.entries) / pos.total_size
-                pos.tp = pos.avg_price + TP_MULT * atr_val if direction == "LONG" else pos.avg_price - TP_MULT * atr_val
-                logger.info(f"  DCA #{pos.total_size} {symbol} {direction} @ {price:.2f} (avg: {pos.avg_price:.2f})")
-                self._log_dca_entry(pos, price, signal)
             return
 
         # New position
@@ -464,6 +506,7 @@ class VolumeBarsBot:
             avg_price=price, total_size=1,
             hard_sl=hard_sl, tp=tp,
             entry_time=time.time(),
+            entry_atr=atr_val,
         )
         self.positions.append(pos)
 
@@ -586,32 +629,111 @@ class VolumeBarsBot:
         with open(self._paper_trades_file, "w") as f:
             json.dump(trades, f, indent=2)
 
+    def _try_dca(self, symbol: str):
+        """Check DCA for existing position — independent of signal guards (like backtest).
+        Backtest DCA only needs: price at level + roc >= 0 + ADX max entries.
+        """
+        with self._lock:
+            existing = [p for p in self.positions if p.symbol == symbol]
+            if not existing:
+                return
+            pos = existing[0]
+
+        vdf = self.vol_bars.get(symbol)
+        if vdf is None or len(vdf) < 20:
+            return
+
+        j = len(vdf) - 1
+        roc_val = float(vdf["roc_12"].iloc[j]) if "roc_12" in vdf.columns else 0
+        if pos.direction == "LONG" and roc_val < 0:
+            return
+        if pos.direction == "SHORT" and roc_val > 0:
+            return
+
+        adx_col = vdf["ADX_14"] if "ADX_14" in vdf.columns else None
+        if adx_col is not None:
+            if isinstance(adx_col, pd.DataFrame):
+                adx_col = adx_col.iloc[:, 0]
+            adx_val = float(adx_col.iloc[j])
+        else:
+            adx_val = 25.0
+
+        if adx_val >= 30:
+            dyn_max = 3
+        elif adx_val >= 20:
+            dyn_max = 2
+        else:
+            dyn_max = 1
+
+        with self._lock:
+            if pos.total_size >= min(MAX_DCA, dyn_max):
+                return
+
+            ea = pos.entry_atr if pos.entry_atr > 0 else float(vdf["atr"].iloc[j]) if "atr" in vdf.columns else 0
+            if ea <= 0:
+                return
+
+            atr_arr = vdf["atr"].values if "atr" in vdf.columns else np.array([ea])
+            atr_ma20 = pd.Series(atr_arr).rolling(20, min_periods=1).mean().values
+            cur_atr = atr_arr[-1] if len(atr_arr) > 0 else ea
+            atr_exp = cur_atr / atr_ma20[-1] if len(atr_ma20) > 0 and atr_ma20[-1] > 0 else 1.0
+            vol_scale = max(1.0, atr_exp)
+            effective_step = DCA_STEP_MULT * vol_scale
+
+            dca_level = pos.entries[0][0] - pos.total_size * effective_step * ea if pos.direction == "LONG" \
+                else pos.entries[0][0] + pos.total_size * effective_step * ea
+
+            current_low = float(vdf["low"].iloc[j])
+            current_high = float(vdf["high"].iloc[j])
+            try:
+                ticker = self.fetcher.exchange.fetch_ticker(symbol)
+                price = float(ticker["last"])
+            except Exception:
+                price = float(vdf["close"].iloc[j])
+
+            triggered = (pos.direction == "LONG" and current_low <= dca_level) or \
+                        (pos.direction == "SHORT" and current_high >= dca_level)
+
+            if triggered:
+                pos.entries.append((price, time.time()))
+                pos.total_size += 1
+                pos.avg_price = sum(e[0] for e in pos.entries) / pos.total_size
+                pos.tp = pos.avg_price + TP_MULT * ea if pos.direction == "LONG" else pos.avg_price - TP_MULT * ea
+                logger.info(f"  DCA #{pos.total_size} {symbol} {pos.direction} @ {price:.2f} (avg: {pos.avg_price:.2f}) vol_scale={vol_scale:.2f}")
+                signal = {"atr": ea, "adx": adx_val, "roc_12": roc_val}
+                self._log_dca_entry(pos, price, signal)
+
     def _process_pair(self, symbol: str):
         """Fully independent pair processing: scan + signal + open + close. Runs in own thread."""
         try:
             # 1. Update volume bars (pair-specific data, no lock needed)
             new_bar = self.update_volume_bars(symbol)
             if not new_bar:
-                # Still check existing positions for this pair
-                self._check_pair_positions(symbol)
+                # Still check positions (live SL/TP) but DON'T increment bars_held
+                self._check_pair_positions(symbol, new_bar_closed=False)
                 return
 
-            # 2. Check signal (reads shared global_locked_dir but doesn't modify)
+            # Track per-pair volume bar count (for cooldowns in vol bar units)
+            self.vol_bar_counts[symbol] = self.vol_bar_counts.get(symbol, 0) + 1
+
+            # 2. Check DCA for existing positions (independent of signal guards, like backtest)
+            self._try_dca(symbol)
+
+            # 3. Check signal for NEW positions
             signal = self.check_signal(symbol)
 
-            # 3. Open position if signal (needs lock for shared state)
             if signal:
                 logger.info(f"  SIGNAL: {signal['direction']} {signal['symbol']} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
                 with self._lock:
                     self.open_position(signal)
 
-            # 4. Check positions for this pair (needs lock)
-            self._check_pair_positions(symbol)
+            # 4. Check positions for this pair (new bar = increment bars_held)
+            self._check_pair_positions(symbol, new_bar_closed=True)
 
         except Exception as e:
             logger.error(f"Error processing {symbol}: {e}")
 
-    def _check_pair_positions(self, symbol: str):
+    def _check_pair_positions(self, symbol: str, new_bar_closed: bool = True):
         """Check SL/TP/timeout for positions of this specific pair."""
         with self._lock:
             for pos in list(self.positions):
@@ -622,7 +744,6 @@ class VolumeBarsBot:
                 if vdf is None or len(vdf) < 2:
                     continue
 
-                # Use live price for current, bar high/low for SL/TP check
                 try:
                     ticker = self.fetcher.exchange.fetch_ticker(pos.symbol)
                     current_price = float(ticker["last"])
@@ -630,15 +751,34 @@ class VolumeBarsBot:
                     current_price = float(vdf["close"].iloc[-1])
                 current_high = float(vdf["high"].iloc[-1])
                 current_low = float(vdf["low"].iloc[-1])
-                pos.bars_held += 1
+
+                # Only count volume bars, not scans (like backtest)
+                if new_bar_closed:
+                    pos.bars_held += 1
+
+                # Volatility-scaled dynamic hard SL (like backtest)
+                ea = pos.entry_atr if pos.entry_atr > 0 else float(vdf["atr"].iloc[-1]) if "atr" in vdf.columns else 0
+                atr_arr = vdf["atr"].values if "atr" in vdf.columns else np.array([ea])
+                atr_ma20 = pd.Series(atr_arr).rolling(20, min_periods=1).mean().values
+                cur_atr = atr_arr[-1] if len(atr_arr) > 0 else ea
+                atr_exp = cur_atr / atr_ma20[-1] if len(atr_ma20) > 0 and atr_ma20[-1] > 0 else 1.0
+                vol_scale = max(1.0, atr_exp)
+                effective_hard_sl_dist = SL_MULT * vol_scale * ea
+
+                if pos.direction == "LONG":
+                    dynamic_hard_sl = pos.entries[0][0] - effective_hard_sl_dist
+                    effective_sl = min(pos.hard_sl, dynamic_hard_sl)
+                else:
+                    dynamic_hard_sl = pos.entries[0][0] + effective_hard_sl_dist
+                    effective_sl = max(pos.hard_sl, dynamic_hard_sl)
 
                 hit_tp = hit_sl = False
                 if pos.direction == "LONG":
                     hit_tp = current_high >= pos.tp
-                    hit_sl = current_low <= pos.hard_sl
+                    hit_sl = current_low <= effective_sl
                 else:
                     hit_tp = current_low <= pos.tp
-                    hit_sl = current_high >= pos.hard_sl
+                    hit_sl = current_high >= effective_sl
 
                 exit_reason = None
                 exit_price = current_price
@@ -683,9 +823,20 @@ class VolumeBarsBot:
                             self.global_locked_dir = None
                             logger.info(f"  UNLOCK {pos.direction}")
 
+                    # Per-pair per-direction SL cooldown (in volume bar units)
+                    pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
+                    pair_dir_key = f"{pos.symbol}_{pos.direction}"
+                    if exit_reason == "HARD_SL":
+                        self.pair_sl_streaks[pair_dir_key] = self.pair_sl_streaks.get(pair_dir_key, 0) + 1
+                        if self.pair_sl_streaks[pair_dir_key] >= self.PAIR_COOLDOWN_SL:
+                            self.pair_dir_cooldowns[pair_dir_key] = pair_vb + self.PAIR_COOLDOWN_BARS
+                            logger.info(f"  PAIR_COOLDOWN {pos.symbol} {pos.direction} for {self.PAIR_COOLDOWN_BARS} vol bars")
+                    else:
+                        self.pair_sl_streaks[pair_dir_key] = 0
+
                     self._log_trade_close(pos, exit_price, exit_reason, pnl_pct)
                     self.positions.remove(pos)
-                    self.cooldowns[pos.symbol] = self.scan_count + COOLDOWN_BARS
+                    self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
 
     def scan(self):
         """Run one scan cycle — each pair fully independent in its own thread."""
