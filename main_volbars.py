@@ -390,7 +390,10 @@ class VolumeBarsBot:
             "symbol": symbol,
             "direction": direction,
             "price": live_price,
-            "bar_close_price": bar_close_price,
+            "bar_open": float(vdf["open"].iloc[j]),
+            "bar_high": float(vdf["high"].iloc[j]),
+            "bar_low": float(vdf["low"].iloc[j]),
+            "bar_close": bar_close_price,
             "atr": atr_val,
             "adx": adx,
             "roc_12": roc_12,
@@ -487,11 +490,49 @@ class VolumeBarsBot:
             json.dump(trades, f, indent=2)
 
     def _log_trade_open(self, signal: dict, pos: Position):
-        """Log trade open to trades.log."""
+        """Log trade open to trades.log + paper_trades.json."""
+        import json
         from datetime import datetime
-        line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} OPEN {pos.direction} {pos.symbol} @ {pos.avg_price:.4f} SL={pos.hard_sl:.4f} TP={pos.tp:.4f} ATR={signal['atr']:.4f} ADX={signal.get('adx',0):.0f} roc={signal.get('roc_12',0):.2f}%\n"
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # trades.log
+        line = (
+            f"{now} OPEN {pos.direction} {pos.symbol} "
+            f"@ {pos.avg_price:.4f} SL={pos.hard_sl:.4f} TP={pos.tp:.4f} "
+            f"O={signal.get('bar_open',0):.4f} H={signal.get('bar_high',0):.4f} "
+            f"L={signal.get('bar_low',0):.4f} C={signal.get('bar_close',0):.4f} "
+            f"ATR={signal['atr']:.4f} ADX={signal.get('adx',0):.0f} roc={signal.get('roc_12',0):.2f}%\n"
+        )
         with open(self._trades_log, "a") as f:
             f.write(line)
+
+        # paper_trades.json
+        trade_record = {
+            "type": "OPEN",
+            "symbol": pos.symbol,
+            "direction": pos.direction,
+            "entry_price": pos.avg_price,
+            "sl": pos.hard_sl,
+            "tp": pos.tp,
+            "bar_open": signal.get("bar_open", 0),
+            "bar_high": signal.get("bar_high", 0),
+            "bar_low": signal.get("bar_low", 0),
+            "bar_close": signal.get("bar_close", 0),
+            "atr": signal["atr"],
+            "adx": signal.get("adx", 0),
+            "roc_12": signal.get("roc_12", 0),
+            "time": now,
+        }
+        trades = []
+        if os.path.exists(self._paper_trades_file):
+            try:
+                with open(self._paper_trades_file) as f:
+                    trades = json.load(f)
+            except Exception:
+                trades = []
+        trades.append(trade_record)
+        with open(self._paper_trades_file, "w") as f:
+            json.dump(trades, f, indent=2)
 
     def _log_trade_close(self, pos: Position, exit_price: float, exit_reason: str, pnl_pct: float):
         """Log trade close to trades.log + append to paper_trades.json."""
@@ -507,6 +548,7 @@ class VolumeBarsBot:
 
         # paper_trades.json
         trade_record = {
+            "type": "CLOSE",
             "symbol": pos.symbol,
             "direction": pos.direction,
             "entry_price": pos.avg_price,
