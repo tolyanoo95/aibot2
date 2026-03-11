@@ -566,12 +566,15 @@ if __name__ == "__main__":
     parser.add_argument("--test-bars", type=int, default=300)
     parser.add_argument("--conf", type=float, default=0.0, help="0=no ML, >0=ML filter")
     parser.add_argument("--dca", action="store_true", help="Use DCA (1/3 sizing per entry)")
+    parser.add_argument("--sl", type=float, default=2.0, help="SL multiplier (default 2.0)")
+    parser.add_argument("--tp", type=float, default=4.0, help="TP multiplier (default 4.0)")
     parser.add_argument("--early-exit", type=str, default="", help="Early exit: vol_drop,obv_div,vol_dry")
     parser.add_argument("--entry-filter", type=str, default="", help="Entry filter: vol_drop,obv_div,vol_dry")
     args = parser.parse_args()
     run_volbars_backtest(
         total_days=args.days, train_bars=args.train_bars,
         test_bars=args.test_bars, conf_threshold=args.conf,
+        sl_mult=args.sl, tp_mult=args.tp,
         use_dca=args.dca, early_exit=args.early_exit,
         entry_filter=args.entry_filter,
     )
