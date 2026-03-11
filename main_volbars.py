@@ -460,15 +460,23 @@ class VolumeBarsBot:
         j = len(vdf) - 1
         roc_12 = float(vdf["roc_12"].iloc[j]) if "roc_12" in vdf.columns else 0
 
+        adx_col = vdf["ADX_14"] if "ADX_14" in vdf.columns else None
+        if adx_col is not None and isinstance(adx_col, pd.DataFrame):
+            adx_col = adx_col.iloc[:, 0]
+        adx_raw = float(adx_col.iloc[j]) if adx_col is not None else 0
+        rsi_s6_raw = float(vdf["rsi"].diff(6).iloc[j]) if "rsi" in vdf.columns else 0
+
         if roc_12 > LONG_MOM:
             direction = "LONG"
         elif roc_12 < -SHORT_MOM:
             direction = "SHORT"
         else:
+            logger.debug(f"  {symbol}: roc={roc_12:+.2f}% (weak) ADX={adx_raw:.0f}")
             return None
 
         # Global direction lock
         if self.global_locked_dir == direction:
+            logger.debug(f"  {symbol}: {direction} LOCKED roc={roc_12:+.2f}%")
             return None
 
         # HTF volume bars trend filter
@@ -476,8 +484,10 @@ class VolumeBarsBot:
         htf_e21 = float(vdf["htf_ema_21"].iloc[j]) if "htf_ema_21" in vdf.columns else 0
         if htf_e9 > 0 and htf_e21 > 0:
             if direction == "LONG" and htf_e9 < htf_e21:
+                logger.debug(f"  {symbol}: {direction} blocked by HTF (downtrend) roc={roc_12:+.2f}%")
                 return None
             if direction == "SHORT" and htf_e9 > htf_e21:
+                logger.debug(f"  {symbol}: {direction} blocked by HTF (uptrend) roc={roc_12:+.2f}%")
                 return None
 
         # ATR expansion filter
@@ -485,23 +495,25 @@ class VolumeBarsBot:
         atr_ma20 = pd.Series(atr).rolling(20, min_periods=1).mean().values
         atr_exp = atr[j] / atr_ma20[j] if atr_ma20[j] > 0 else 1.0
         if np.isnan(atr_exp) or atr_exp > ATR_EXP_MAX:
+            logger.debug(f"  {symbol}: {direction} blocked by ATR_EXP={atr_exp:.2f} roc={roc_12:+.2f}%")
             return None
 
         # ADX guard
-        adx_col = vdf["ADX_14"]
-        if isinstance(adx_col, pd.DataFrame):
-            adx_col = adx_col.iloc[:, 0]
-        adx = float(adx_col.iloc[j]) if "ADX_14" in vdf.columns else 25
+        adx = adx_raw
         if np.isnan(adx) or adx < ADX_MIN:
+            logger.debug(f"  {symbol}: {direction} blocked by ADX={adx:.0f} roc={roc_12:+.2f}%")
             return None
 
         # RSI slope guard
-        rsi_s6 = float(vdf["rsi"].diff(6).iloc[j]) if "rsi" in vdf.columns else 0
+        rsi_s6 = rsi_s6_raw
         if np.isnan(rsi_s6):
+            logger.debug(f"  {symbol}: {direction} blocked by RSI=NaN roc={roc_12:+.2f}%")
             return None
         if direction == "LONG" and rsi_s6 < 0:
+            logger.debug(f"  {symbol}: {direction} blocked by RSI_slope={rsi_s6:.1f} roc={roc_12:+.2f}%")
             return None
         if direction == "SHORT" and rsi_s6 > 0:
+            logger.debug(f"  {symbol}: {direction} blocked by RSI_slope={rsi_s6:+.1f} roc={roc_12:+.2f}%")
             return None
 
         bar_close_price = float(vdf["close"].iloc[j])
@@ -997,6 +1009,38 @@ class VolumeBarsBot:
                 )
 
         logger.info(f"  Positions: {len(self.positions)} | Total pairs: {len(self.vol_bars)}")
+
+        # Scan summary: why each pair has no signal
+        held_symbols = {p.symbol for p in self.positions}
+        summaries = []
+        for sym in sorted(self.vol_bars.keys()):
+            if sym in held_symbols:
+                continue
+            vdf = self.vol_bars[sym]
+            if len(vdf) < 50:
+                continue
+            j = len(vdf) - 1
+            roc = float(vdf["roc_12"].iloc[j]) if "roc_12" in vdf.columns else 0
+            adx_c = vdf["ADX_14"] if "ADX_14" in vdf.columns else None
+            if adx_c is not None and isinstance(adx_c, pd.DataFrame):
+                adx_c = adx_c.iloc[:, 0]
+            adx_v = float(adx_c.iloc[j]) if adx_c is not None else 0
+            rsi_s = float(vdf["rsi"].diff(6).iloc[j]) if "rsi" in vdf.columns else 0
+            short_name = sym.replace("/USDT", "")
+
+            if -SHORT_MOM <= roc <= LONG_MOM:
+                summaries.append(f"{short_name}:roc={roc:+.1f}%")
+            elif self.global_locked_dir and ((roc > LONG_MOM and self.global_locked_dir == "LONG") or (roc < -SHORT_MOM and self.global_locked_dir == "SHORT")):
+                summaries.append(f"{short_name}:LOCKED")
+            elif adx_v < ADX_MIN:
+                summaries.append(f"{short_name}:ADX={adx_v:.0f}")
+            elif (roc > 0 and rsi_s < 0) or (roc < 0 and rsi_s > 0):
+                summaries.append(f"{short_name}:RSI={rsi_s:+.0f}")
+            else:
+                summaries.append(f"{short_name}:HTF")
+
+        if summaries:
+            logger.info(f"  Skip: {' | '.join(summaries)}")
 
         # Save state to disk after every scan
         self._save_state()
