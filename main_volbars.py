@@ -383,8 +383,10 @@ class VolumeBarsBot:
                             "low": htf_buf["bar_low"], "close": float(latest["close"]),
                             "volume": htf_buf["cum_vol"],
                         }], index=[htf_buf["bar_start"]])
-                        self.htf_vol_bars[symbol] = pd.concat([self.htf_vol_bars[symbol], htf_bar]).tail(200)
-                        self.htf_vol_bars[symbol] = self.indicators.calculate_all(self.htf_vol_bars[symbol])
+                        htf_base = self.htf_vol_bars[symbol][["open", "high", "low", "close", "volume"]]
+                        htf_base = pd.concat([htf_base, htf_bar]).tail(200)
+                        htf_base = htf_base[~htf_base.index.duplicated(keep='last')]
+                        self.htf_vol_bars[symbol] = self.indicators.calculate_all(htf_base)
                         for col in ["ema_9", "ema_21", "ema_50"]:
                             if col in self.htf_vol_bars[symbol].columns:
                                 self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(self.vol_bars[symbol].index, method="ffill")
