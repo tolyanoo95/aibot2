@@ -95,6 +95,8 @@ class Position:
     entry_time: float = 0.0
     bars_held: int = 0
     entry_atr: float = 0.0
+    max_price: float = 0.0
+    min_price: float = float('inf')
 
 
 class VolumeBarsBot:
@@ -161,7 +163,7 @@ class VolumeBarsBot:
                         "entries": p.entries, "avg_price": p.avg_price,
                         "total_size": p.total_size, "hard_sl": p.hard_sl,
                         "tp": p.tp, "entry_time": p.entry_time, "bars_held": p.bars_held,
-                        "entry_atr": p.entry_atr,
+                        "entry_atr": p.entry_atr, "max_price": p.max_price, "min_price": p.min_price,
                     } for p in self.positions
                 ],
                 "vol_buffers": {k: {kk: (vv if not isinstance(vv, pd.Timestamp) else str(vv))
@@ -221,6 +223,8 @@ class VolumeBarsBot:
                     tp=p_data["tp"], entry_time=p_data.get("entry_time", 0),
                     bars_held=p_data.get("bars_held", 0),
                     entry_atr=p_data.get("entry_atr", 0),
+                    max_price=p_data.get("max_price", 0),
+                    min_price=p_data.get("min_price", float('inf')),
                 )
                 self.positions.append(pos)
 
@@ -262,6 +266,8 @@ class VolumeBarsBot:
                         tp=p_data["tp"], entry_time=p_data.get("entry_time", 0),
                         bars_held=p_data.get("bars_held", 0),
                         entry_atr=p_data.get("entry_atr", 0),
+                        max_price=p_data.get("max_price", 0),
+                        min_price=p_data.get("min_price", float('inf')),
                     )
                     self.positions.append(pos)
                 logger.info(f"  Loaded {len(self.positions)} positions, lock={self.global_locked_dir}")
@@ -591,6 +597,8 @@ class VolumeBarsBot:
             hard_sl=hard_sl, tp=tp,
             entry_time=time.time(),
             entry_atr=atr_val,
+            max_price=price,
+            min_price=price,
         )
         self.positions.append(pos)
 
@@ -689,7 +697,15 @@ class VolumeBarsBot:
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # trades.log
-        line = f"{now} CLOSE {pos.direction} {pos.symbol} @ {_pfmt(exit_price)} | {exit_reason} | PnL {pnl_pct:+.2f}% | DCA:{pos.total_size} | Bars:{pos.bars_held}\n"
+        if pos.direction == "LONG":
+            mfe = (pos.max_price - pos.avg_price) / pos.avg_price * 100
+            mae = (pos.avg_price - pos.min_price) / pos.avg_price * 100
+        else:
+            mfe = (pos.avg_price - pos.min_price) / pos.avg_price * 100
+            mae = (pos.max_price - pos.avg_price) / pos.avg_price * 100
+        line = (f"{now} CLOSE {pos.direction} {pos.symbol} @ {_pfmt(exit_price)} | {exit_reason} | "
+                f"PnL {pnl_pct:+.2f}% | DCA:{pos.total_size} | Bars:{pos.bars_held} | "
+                f"MFE:{mfe:+.2f}% MAE:{mae:.2f}% High:{_pfmt(pos.max_price)} Low:{_pfmt(pos.min_price)}\n")
         with open(self._trades_log, "a") as f:
             f.write(line)
 
@@ -710,6 +726,10 @@ class VolumeBarsBot:
                 t["exit_reason"] = exit_reason
                 t["dca_count"] = pos.total_size
                 t["bars_held"] = pos.bars_held
+                t["max_price"] = _prnd(pos.max_price)
+                t["min_price"] = _prnd(pos.min_price)
+                t["mfe_pct"] = round(mfe, 2)
+                t["mae_pct"] = round(mae, 2)
                 t["close_time"] = now
                 break
         with open(self._paper_trades_file, "w") as f:
@@ -837,6 +857,10 @@ class VolumeBarsBot:
                     current_price = float(vdf["close"].iloc[-1])
                 current_high = float(vdf["high"].iloc[-1])
                 current_low = float(vdf["low"].iloc[-1])
+
+                # Track MFE/MAE
+                pos.max_price = max(pos.max_price, current_high, current_price)
+                pos.min_price = min(pos.min_price, current_low, current_price)
 
                 # Only count volume bars, not scans (like backtest)
                 if new_bar_closed:
@@ -968,7 +992,8 @@ class VolumeBarsBot:
                     unrealized = (pos.avg_price - current) / pos.avg_price * 100
                 logger.info(
                     f"  HOLDING: {pos.direction} {pos.symbol} entry={_pfmt(pos.avg_price)} "
-                    f"now={_pfmt(current)} PnL={unrealized:+.2f}% bars={pos.bars_held} dca={pos.total_size}"
+                    f"now={_pfmt(current)} PnL={unrealized:+.2f}% bars={pos.bars_held} dca={pos.total_size} "
+                    f"high={_pfmt(pos.max_price)} low={_pfmt(pos.min_price)}"
                 )
 
         logger.info(f"  Positions: {len(self.positions)} | Total pairs: {len(self.vol_bars)}")
