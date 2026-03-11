@@ -259,6 +259,7 @@ class VolumeBarsBot:
                 continue
 
             tdf = self.indicators.calculate_all(df.copy())
+            tdf = tdf[~tdf.index.duplicated(keep='last')]
             self.time_data[symbol] = tdf
 
             vdf = resample_to_volume_bars(df)
@@ -272,12 +273,15 @@ class VolumeBarsBot:
             htf_vdf = resample_to_volume_bars(df, initial_threshold=htf_threshold)
             if len(htf_vdf) > 20:
                 htf_vdf = self.indicators.calculate_all(htf_vdf)
+                htf_vdf = htf_vdf[~htf_vdf.index.duplicated(keep='last')]
                 for col in ["ema_9", "ema_21", "ema_50"]:
                     if col in htf_vdf.columns:
                         vdf[f"htf_{col}"] = htf_vdf[col].reindex(vdf.index, method="ffill")
                 self.htf_vol_bars[symbol] = htf_vdf
 
             vdf = self.indicators.calculate_all(vdf)
+            vdf = vdf[~vdf.index.duplicated(keep='last')]
+            tdf = tdf[~tdf.index.duplicated(keep='last')]
             time_atr = tdf["atr"].reindex(vdf.index, method="ffill")
             vdf["atr"] = time_atr.values
 
