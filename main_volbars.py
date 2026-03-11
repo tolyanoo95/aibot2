@@ -50,6 +50,15 @@ class _Logger:
 
 logger = _Logger()
 
+def _pfmt(price: float) -> str:
+    """Format price with correct decimal precision based on magnitude."""
+    ap = abs(price)
+    if ap >= 1000: return f"{price:.2f}"
+    if ap >= 10: return f"{price:.2f}"
+    if ap >= 1: return f"{price:.4f}"
+    if ap >= 0.01: return f"{price:.5f}"
+    return f"{price:.8f}"
+
 # ── Strategy parameters ──────────────────────────────────────
 SL_MULT = 2.0
 TP_MULT = 4.0
@@ -538,7 +547,7 @@ class VolumeBarsBot:
                 flip_pnl = (flip_price - ex.avg_price) / ex.avg_price * 100 * ex.total_size
             else:
                 flip_pnl = (ex.avg_price - flip_price) / ex.avg_price * 100 * ex.total_size
-            logger.info(f"  FLIP {ex.direction}→{direction} {symbol} @ {flip_price:.2f} | PnL {flip_pnl:+.2f}%")
+            logger.info(f"  FLIP {ex.direction}→{direction} {symbol} @ {_pfmt(flip_price)} | PnL {flip_pnl:+.2f}%")
 
             # Update global lock / pair cooldown
             pair_vb = self.vol_bar_counts.get(symbol, 0)
@@ -576,7 +585,7 @@ class VolumeBarsBot:
         )
         self.positions.append(pos)
 
-        logger.info(f"  OPEN {direction} {symbol} @ {price:.2f} | SL={hard_sl:.2f} TP={tp:.2f} ATR={atr_val:.2f}")
+        logger.info(f"  OPEN {direction} {symbol} @ {_pfmt(price)} | SL={_pfmt(hard_sl)} TP={_pfmt(tp)} ATR={_pfmt(atr_val)}")
         self._log_trade_open(signal, pos)
 
     def _log_dca_entry(self, pos: Position, price: float, signal: dict):
@@ -586,7 +595,7 @@ class VolumeBarsBot:
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # trades.log
-        line = f"{now} DCA #{pos.total_size} {pos.direction} {pos.symbol} @ {price:.4f} avg={pos.avg_price:.4f} TP={pos.tp:.4f}\n"
+        line = f"{now} DCA #{pos.total_size} {pos.direction} {pos.symbol} @ {_pfmt(price)} avg={_pfmt(pos.avg_price)} TP={_pfmt(pos.tp)}\n"
         with open(self._trades_log, "a") as f:
             f.write(line)
 
@@ -621,10 +630,10 @@ class VolumeBarsBot:
         # trades.log
         line = (
             f"{now} OPEN {pos.direction} {pos.symbol} "
-            f"@ {pos.avg_price:.4f} SL={pos.hard_sl:.4f} TP={pos.tp:.4f} "
-            f"O={signal.get('bar_open',0):.4f} H={signal.get('bar_high',0):.4f} "
-            f"L={signal.get('bar_low',0):.4f} C={signal.get('bar_close',0):.4f} "
-            f"ATR={signal['atr']:.4f} ADX={signal.get('adx',0):.0f} roc={signal.get('roc_12',0):.2f}%\n"
+            f"@ {_pfmt(pos.avg_price)} SL={_pfmt(pos.hard_sl)} TP={_pfmt(pos.tp)} "
+            f"O={_pfmt(signal.get('bar_open',0))} H={_pfmt(signal.get('bar_high',0))} "
+            f"L={_pfmt(signal.get('bar_low',0))} C={_pfmt(signal.get('bar_close',0))} "
+            f"ATR={_pfmt(signal['atr'])} ADX={signal.get('adx',0):.0f} roc={signal.get('roc_12',0):.2f}%\n"
         )
         with open(self._trades_log, "a") as f:
             f.write(line)
@@ -665,7 +674,7 @@ class VolumeBarsBot:
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # trades.log
-        line = f"{now} CLOSE {pos.direction} {pos.symbol} @ {exit_price:.4f} | {exit_reason} | PnL {pnl_pct:+.2f}% | DCA:{pos.total_size} | Bars:{pos.bars_held}\n"
+        line = f"{now} CLOSE {pos.direction} {pos.symbol} @ {_pfmt(exit_price)} | {exit_reason} | PnL {pnl_pct:+.2f}% | DCA:{pos.total_size} | Bars:{pos.bars_held}\n"
         with open(self._trades_log, "a") as f:
             f.write(line)
 
@@ -765,7 +774,7 @@ class VolumeBarsBot:
                 pos.total_size += 1
                 pos.avg_price = sum(e[0] for e in pos.entries) / pos.total_size
                 pos.tp = pos.avg_price + TP_MULT * ea if pos.direction == "LONG" else pos.avg_price - TP_MULT * ea
-                logger.info(f"  DCA #{pos.total_size} {symbol} {pos.direction} @ {price:.2f} (avg: {pos.avg_price:.2f}) vol_scale={vol_scale:.2f}")
+                logger.info(f"  DCA #{pos.total_size} {symbol} {pos.direction} @ {_pfmt(price)} (avg: {_pfmt(pos.avg_price)}) vol_scale={vol_scale:.2f}")
                 signal = {"atr": ea, "adx": adx_val, "roc_12": roc_val}
                 self._log_dca_entry(pos, price, signal)
 
@@ -789,7 +798,7 @@ class VolumeBarsBot:
             signal = self.check_signal(symbol)
 
             if signal:
-                logger.info(f"  SIGNAL: {signal['direction']} {signal['symbol']} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
+                logger.info(f"  SIGNAL: {signal['direction']} {signal['symbol']} @ {_pfmt(signal['price'])} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
                 with self._lock:
                     self.open_position(signal)
 
@@ -883,7 +892,7 @@ class VolumeBarsBot:
                         pnl_pct = (pos.avg_price - exit_price) / pos.avg_price * 100 * pos.total_size
 
                     logger.info(
-                        f"  CLOSE {pos.direction} {pos.symbol} @ {exit_price:.2f} "
+                        f"  CLOSE {pos.direction} {pos.symbol} @ {_pfmt(exit_price)} "
                         f"| {exit_reason} | PnL {pnl_pct:+.2f}% | Bars: {pos.bars_held} | DCA: {pos.total_size}"
                     )
 
@@ -947,8 +956,8 @@ class VolumeBarsBot:
                 else:
                     unrealized = (pos.avg_price - current) / pos.avg_price * 100
                 logger.info(
-                    f"  HOLDING: {pos.direction} {pos.symbol} entry={pos.avg_price:.2f} "
-                    f"now={current:.2f} PnL={unrealized:+.2f}% bars={pos.bars_held} dca={pos.total_size}"
+                    f"  HOLDING: {pos.direction} {pos.symbol} entry={_pfmt(pos.avg_price)} "
+                    f"now={_pfmt(current)} PnL={unrealized:+.2f}% bars={pos.bars_held} dca={pos.total_size}"
                 )
 
         logger.info(f"  Positions: {len(self.positions)} | Total pairs: {len(self.vol_bars)}")
