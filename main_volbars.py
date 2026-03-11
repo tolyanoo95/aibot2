@@ -358,6 +358,13 @@ class VolumeBarsBot:
                     )
                     self.vol_bars[symbol]["atr"] = time_atr.values
 
+                # Re-apply HTF EMA values (lost after OHLCV-only recalculate)
+                if symbol in self.htf_vol_bars:
+                    for col in ["ema_9", "ema_21", "ema_50"]:
+                        if col in self.htf_vol_bars[symbol].columns:
+                            self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(
+                                self.vol_bars[symbol].index, method="ffill")
+
                 # Update HTF volume bars (5x threshold)
                 if symbol in self.htf_vol_bars:
                     htf_threshold = self.vol_thresholds.get(symbol, 2000) * 5
