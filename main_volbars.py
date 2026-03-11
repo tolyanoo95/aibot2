@@ -316,11 +316,12 @@ class VolumeBarsBot:
             latest = df_new.iloc[-1]
             buf = self.vol_buffers[symbol]
 
-            # Update time data
+            # Update time data (keep only OHLCV before concat to avoid duplicate column issues)
             if symbol in self.time_data:
-                self.time_data[symbol] = pd.concat([self.time_data[symbol], df_new.iloc[[-1]]])
-                self.time_data[symbol] = self.time_data[symbol][~self.time_data[symbol].index.duplicated(keep='last')]
-                self.time_data[symbol] = self.indicators.calculate_all(self.time_data[symbol].tail(1000))
+                base = self.time_data[symbol][["open", "high", "low", "close", "volume"]]
+                base = pd.concat([base, df_new.iloc[[-1]]])
+                base = base[~base.index.duplicated(keep='last')]
+                self.time_data[symbol] = self.indicators.calculate_all(base.tail(1000))
                 self.time_data[symbol] = self.time_data[symbol][~self.time_data[symbol].index.duplicated(keep='last')]
 
             if buf["bar_open"] is None:
@@ -344,11 +345,10 @@ class VolumeBarsBot:
                     "volume": buf["cum_vol"],
                 }], index=[buf["bar_start"]])
 
-                self.vol_bars[symbol] = pd.concat([self.vol_bars[symbol], new_bar])
-                self.vol_bars[symbol] = self.vol_bars[symbol][~self.vol_bars[symbol].index.duplicated(keep='last')]
-                self.vol_bars[symbol] = self.indicators.calculate_all(
-                    self.vol_bars[symbol].tail(1000)
-                )
+                vb_base = self.vol_bars[symbol][["open", "high", "low", "close", "volume"]]
+                vb_base = pd.concat([vb_base, new_bar])
+                vb_base = vb_base[~vb_base.index.duplicated(keep='last')]
+                self.vol_bars[symbol] = self.indicators.calculate_all(vb_base.tail(1000))
                 self.vol_bars[symbol] = self.vol_bars[symbol][~self.vol_bars[symbol].index.duplicated(keep='last')]
 
                 # Update ATR from time bars
