@@ -460,7 +460,7 @@ class VolumeBarsBot:
         atr = vdf["atr"].values
         atr_ma20 = pd.Series(atr).rolling(20, min_periods=1).mean().values
         atr_exp = atr[j] / atr_ma20[j] if atr_ma20[j] > 0 else 1.0
-        if atr_exp > ATR_EXP_MAX:
+        if np.isnan(atr_exp) or atr_exp > ATR_EXP_MAX:
             return None
 
         # ADX guard
@@ -468,11 +468,13 @@ class VolumeBarsBot:
         if isinstance(adx_col, pd.DataFrame):
             adx_col = adx_col.iloc[:, 0]
         adx = float(adx_col.iloc[j]) if "ADX_14" in vdf.columns else 25
-        if adx < ADX_MIN:
+        if np.isnan(adx) or adx < ADX_MIN:
             return None
 
         # RSI slope guard
         rsi_s6 = float(vdf["rsi"].diff(6).iloc[j]) if "rsi" in vdf.columns else 0
+        if np.isnan(rsi_s6):
+            return None
         if direction == "LONG" and rsi_s6 < 0:
             return None
         if direction == "SHORT" and rsi_s6 > 0:
@@ -480,6 +482,8 @@ class VolumeBarsBot:
 
         bar_close_price = float(vdf["close"].iloc[j])
         atr_val = float(atr[j])
+        if np.isnan(atr_val) or atr_val <= 0:
+            return None
 
         # Get real-time price from exchange (not bar close)
         try:
