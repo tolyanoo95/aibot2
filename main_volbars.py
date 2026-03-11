@@ -598,7 +598,7 @@ class VolumeBarsBot:
         self._log_trade_open(signal, pos)
 
     def _log_dca_entry(self, pos: Position, price: float, signal: dict):
-        """Log DCA entry to trades.log + update paper_trades.json."""
+        """Log DCA entry to trades.log + update existing OPEN in paper_trades.json."""
         import json
         from datetime import datetime
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -608,17 +608,7 @@ class VolumeBarsBot:
         with open(self._trades_log, "a") as f:
             f.write(line)
 
-        # paper_trades.json — add DCA event
-        trade_record = {
-            "type": "DCA",
-            "symbol": pos.symbol,
-            "direction": pos.direction,
-            "dca_number": pos.total_size,
-            "entry_price": _prnd(price),
-            "avg_price": _prnd(pos.avg_price),
-            "new_tp": _prnd(pos.tp),
-            "time": now,
-        }
+        # paper_trades.json — update existing OPEN object
         trades = []
         if os.path.exists(self._paper_trades_file):
             try:
@@ -626,7 +616,19 @@ class VolumeBarsBot:
                     trades = json.load(f)
             except Exception:
                 trades = []
-        trades.append(trade_record)
+        for t in reversed(trades):
+            if t.get("symbol") == pos.symbol and t.get("status") == "OPEN":
+                if "dca" not in t:
+                    t["dca"] = []
+                t["dca"].append({
+                    "number": pos.total_size,
+                    "price": _prnd(price),
+                    "time": now,
+                })
+                t["avg_price"] = _prnd(pos.avg_price)
+                t["tp"] = _prnd(pos.tp)
+                t["dca_count"] = pos.total_size
+                break
         with open(self._paper_trades_file, "w") as f:
             json.dump(trades, f, indent=2)
 
@@ -650,20 +652,23 @@ class VolumeBarsBot:
         # paper_trades.json
         p = pos.avg_price
         trade_record = {
-            "type": "OPEN",
             "symbol": pos.symbol,
             "direction": pos.direction,
+            "status": "OPEN",
             "entry_price": _prnd(p),
             "sl": _prnd(pos.hard_sl),
             "tp": _prnd(pos.tp),
-            "bar_open": _prnd(signal.get("bar_open", 0)),
-            "bar_high": _prnd(signal.get("bar_high", 0)),
-            "bar_low": _prnd(signal.get("bar_low", 0)),
-            "bar_close": _prnd(signal.get("bar_close", 0)),
             "atr": _prnd(signal["atr"]),
             "adx": round(signal.get("adx", 0), 1),
             "roc_12": round(signal.get("roc_12", 0), 2),
-            "time": now,
+            "bar": {
+                "open": _prnd(signal.get("bar_open", 0)),
+                "high": _prnd(signal.get("bar_high", 0)),
+                "low": _prnd(signal.get("bar_low", 0)),
+                "close": _prnd(signal.get("bar_close", 0)),
+            },
+            "open_time": now,
+            "dca_count": 1,
         }
         trades = []
         if os.path.exists(self._paper_trades_file):
@@ -688,21 +693,7 @@ class VolumeBarsBot:
         with open(self._trades_log, "a") as f:
             f.write(line)
 
-        # paper_trades.json
-        trade_record = {
-            "type": "CLOSE",
-            "symbol": pos.symbol,
-            "direction": pos.direction,
-            "entry_price": _prnd(pos.avg_price),
-            "exit_price": _prnd(exit_price),
-            "pnl_pct": round(pnl_pct, 2),
-            "exit_reason": exit_reason,
-            "dca_entries": pos.total_size,
-            "bars_held": pos.bars_held,
-            "entry_time": datetime.fromtimestamp(pos.entry_time).strftime('%Y-%m-%d %H:%M:%S') if pos.entry_time else "",
-            "exit_time": now,
-        }
-
+        # paper_trades.json — update existing OPEN object
         trades = []
         if os.path.exists(self._paper_trades_file):
             try:
@@ -710,7 +701,17 @@ class VolumeBarsBot:
                     trades = json.load(f)
             except Exception:
                 trades = []
-        trades.append(trade_record)
+        for t in reversed(trades):
+            if t.get("symbol") == pos.symbol and t.get("status") == "OPEN":
+                t["status"] = "CLOSED"
+                t["avg_price"] = _prnd(pos.avg_price)
+                t["exit_price"] = _prnd(exit_price)
+                t["pnl_pct"] = round(pnl_pct, 2)
+                t["exit_reason"] = exit_reason
+                t["dca_count"] = pos.total_size
+                t["bars_held"] = pos.bars_held
+                t["close_time"] = now
+                break
         with open(self._paper_trades_file, "w") as f:
             json.dump(trades, f, indent=2)
 
