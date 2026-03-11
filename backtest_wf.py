@@ -258,7 +258,7 @@ def simulate_dca_trades(
         else:
             obv[k] = obv[k-1]
 
-    ee_vol_drop = "vol_drop" in early_exit
+    ee_vol_drop = True  # always on (like live bot)
     ee_obv_div = "obv_div" in early_exit
     ee_vol_dry = "vol_dry" in early_exit
 
