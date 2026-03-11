@@ -846,6 +846,17 @@ class VolumeBarsBot:
                     hit_tp = current_low <= pos.tp
                     hit_sl = current_high >= effective_sl
 
+                # Volume Drop early exit (like backtest)
+                vol_drop_exit = False
+                if pos.bars_held >= 3 and "volume" in vdf.columns:
+                    j = len(vdf) - 1
+                    vol_vals = vdf["volume"].values
+                    vol_ma20_v = pd.Series(vol_vals).rolling(20, min_periods=1).mean().values
+                    if j >= 2 and vol_ma20_v[j] > 0:
+                        vol_avg3 = vol_vals[j-2:j+1].mean()
+                        if vol_avg3 < vol_ma20_v[j] * 0.5:
+                            vol_drop_exit = True
+
                 exit_reason = None
                 exit_price = current_price
 
@@ -858,6 +869,9 @@ class VolumeBarsBot:
                 elif hit_tp:
                     exit_reason = "TP"
                     exit_price = pos.tp
+                elif vol_drop_exit:
+                    exit_reason = "VOL_DROP"
+                    exit_price = current_price
                 elif pos.bars_held >= 24:
                     exit_reason = "TIMEOUT"
                     exit_price = current_price

@@ -110,6 +110,8 @@ def run_volbars_backtest(
     short_mom: float = 0.10,
     conf_threshold: float = 0.55,
     use_dca: bool = False,
+    early_exit: str = "",
+    entry_filter: str = "",
 ):
     """ML backtest on volume bars instead of time bars."""
 
@@ -390,6 +392,36 @@ def run_volbars_backtest(
                     if direction == "SHORT" and rsi_s6 > 0:
                         direction = "NEUTRAL"; continue
 
+                    # Volume entry filters
+                    if entry_filter and j >= 3:
+                        vol_vals = df_test["volume"].values
+                        vol_ma20_e = pd.Series(vol_vals).rolling(20, min_periods=1).mean().values
+                        # Vol Drop: avg vol last 3 bars < 50% of MA20
+                        if "vol_drop" in entry_filter:
+                            va3 = vol_vals[max(0,j-2):j+1].mean()
+                            if vol_ma20_e[j] > 0 and va3 < vol_ma20_e[j] * 0.5:
+                                direction = "NEUTRAL"; continue
+                        # OBV Div: price up but OBV down (LONG) or vice versa
+                        if "obv_div" in entry_filter:
+                            obv_e = np.zeros(len(vol_vals))
+                            for kk in range(1, len(vol_vals)):
+                                if df_test["close"].values[kk] > df_test["close"].values[kk-1]:
+                                    obv_e[kk] = obv_e[kk-1] + vol_vals[kk]
+                                elif df_test["close"].values[kk] < df_test["close"].values[kk-1]:
+                                    obv_e[kk] = obv_e[kk-1] - vol_vals[kk]
+                                else:
+                                    obv_e[kk] = obv_e[kk-1]
+                            p_up = close_test[j] > close_test[j-3]
+                            o_up = obv_e[j] > obv_e[j-3]
+                            if direction == "LONG" and p_up and not o_up:
+                                direction = "NEUTRAL"; continue
+                            if direction == "SHORT" and not p_up and o_up:
+                                direction = "NEUTRAL"; continue
+                        # Vol Dry: current bar vol < 30% of MA20
+                        if "vol_dry" in entry_filter:
+                            if vol_ma20_e[j] > 0 and vol_vals[j] < vol_ma20_e[j] * 0.3:
+                                direction = "NEUTRAL"; continue
+
                     e50 = ema50_test[j] if j < len(ema50_test) else 0
                     trend_up = close_test[j] > e50 if e50 > 0 else True
                     with_trend = (direction == "LONG" and trend_up) or (direction == "SHORT" and not trend_up)
@@ -421,7 +453,7 @@ def run_volbars_backtest(
                     max_entries=3, hard_sl_mult=sl_mult,
                     max_hold=24, max_open=config.MAX_OPEN_TRADES,
                     cooldown=3, threshold=0.10 if conf_threshold <= 0 else conf_threshold,
-                    full_size_dca=True,
+                    full_size_dca=True, early_exit=early_exit,
                 )
             else:
                 trades = simulate_trades(
@@ -534,9 +566,12 @@ if __name__ == "__main__":
     parser.add_argument("--test-bars", type=int, default=300)
     parser.add_argument("--conf", type=float, default=0.0, help="0=no ML, >0=ML filter")
     parser.add_argument("--dca", action="store_true", help="Use DCA (1/3 sizing per entry)")
+    parser.add_argument("--early-exit", type=str, default="", help="Early exit: vol_drop,obv_div,vol_dry")
+    parser.add_argument("--entry-filter", type=str, default="", help="Entry filter: vol_drop,obv_div,vol_dry")
     args = parser.parse_args()
     run_volbars_backtest(
         total_days=args.days, train_bars=args.train_bars,
         test_bars=args.test_bars, conf_threshold=args.conf,
-        use_dca=args.dca,
+        use_dca=args.dca, early_exit=args.early_exit,
+        entry_filter=args.entry_filter,
     )

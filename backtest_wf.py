@@ -228,6 +228,7 @@ def simulate_dca_trades(
     pair_cooldown_sl: int = 2,
     pair_cooldown_bars: int = 8,
     full_size_dca: bool = False,
+    early_exit: str = "",
 ) -> List[DcaTrade]:
     """DCA v2: 5 improvements to reduce HARD_SL losses."""
     trades: List[DcaTrade] = []
@@ -239,11 +240,27 @@ def simulate_dca_trades(
     close = df["close"].values
     high = df["high"].values
     low = df["low"].values
+    vol = df["volume"].values
     atr = df["atr"].values
     roc12 = df["roc_12"].values if "roc_12" in df.columns else np.zeros(len(df))
     adx = df["ADX_14"].values if "ADX_14" in df.columns else np.full(len(df), 25.0)
     # Fix 1: ATR expansion for volatility-scaled SL/step
     atr_ma20 = pd.Series(atr).rolling(20, min_periods=1).mean().values
+    vol_ma20 = pd.Series(vol).rolling(20, min_periods=1).mean().values
+
+    # OBV (On Balance Volume)
+    obv = np.zeros(len(close))
+    for k in range(1, len(close)):
+        if close[k] > close[k-1]:
+            obv[k] = obv[k-1] + vol[k]
+        elif close[k] < close[k-1]:
+            obv[k] = obv[k-1] - vol[k]
+        else:
+            obv[k] = obv[k-1]
+
+    ee_vol_drop = "vol_drop" in early_exit
+    ee_obv_div = "obv_div" in early_exit
+    ee_vol_dry = "vol_dry" in early_exit
 
     for i in range(len(signals)):
         sig = signals[i]
@@ -300,6 +317,39 @@ def simulate_dca_trades(
                         pos.avg_price = sum(e[0] for e in pos.entries) / pos.total_size
                         pos.tp = pos.avg_price - tp_mult * entry_atr
 
+            # Early exit checks (before SL/TP)
+            early_closed = False
+            if bars_held >= 3:
+                # Volume Drop: avg vol last 3 bars < 50% of MA20
+                if ee_vol_drop and bar_idx >= 2:
+                    vol_avg3 = vol[bar_idx-2:bar_idx+1].mean() if bar_idx >= 2 else vol[bar_idx]
+                    vol_ma = vol_ma20[bar_idx] if bar_idx < len(vol_ma20) and vol_ma20[bar_idx] > 0 else 1
+                    if vol_avg3 < vol_ma * 0.5:
+                        pos.exit_price = close[bar_idx]
+                        pos.exit_reason = "VOL_DROP"
+                        early_closed = True
+
+                # OBV Divergence: price up but OBV down (LONG) or vice versa
+                if ee_obv_div and not early_closed and bar_idx >= 3:
+                    price_up = close[bar_idx] > close[bar_idx-3]
+                    obv_up = obv[bar_idx] > obv[bar_idx-3]
+                    if pos.direction == "LONG" and price_up and not obv_up:
+                        pos.exit_price = close[bar_idx]
+                        pos.exit_reason = "OBV_DIV"
+                        early_closed = True
+                    elif pos.direction == "SHORT" and not price_up and obv_up:
+                        pos.exit_price = close[bar_idx]
+                        pos.exit_reason = "OBV_DIV"
+                        early_closed = True
+
+                # Volume Dry-Up: current bar volume < 30% of MA20
+                if ee_vol_dry and not early_closed:
+                    vol_ma = vol_ma20[bar_idx] if bar_idx < len(vol_ma20) and vol_ma20[bar_idx] > 0 else 1
+                    if vol[bar_idx] < vol_ma * 0.3:
+                        pos.exit_price = close[bar_idx]
+                        pos.exit_reason = "VOL_DRY"
+                        early_closed = True
+
             # Fix 1 continued: volatility-scaled hard SL
             effective_hard_sl_dist = hard_sl_mult * vol_scale * entry_atr
             if pos.direction == "LONG":
@@ -330,6 +380,8 @@ def simulate_dca_trades(
             elif hit_tp:
                 pos.exit_price = pos.tp
                 pos.exit_reason = "TP"
+                closed = True
+            elif early_closed:
                 closed = True
             elif dca_timeout:
                 pos.exit_price = close[bar_idx]

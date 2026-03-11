@@ -125,6 +125,17 @@ def run_test():
             if pos.total_size < 1 or pos.total_size > 3:
                 errors.append(f"SCAN {scan} {pos.symbol}: total_size={pos.total_size}")
 
+        # Verify vol_drop exit data available for position checks
+        for sym in pairs:
+            vdf = bot.vol_bars.get(sym)
+            if vdf is not None and "volume" in vdf.columns:
+                vol_vals = vdf["volume"].values
+                if len(vol_vals) < 20:
+                    errors.append(f"SCAN {scan} {sym}: vol_bars too short for vol_drop ({len(vol_vals)})")
+                vol_ma20 = pd.Series(vol_vals).rolling(20, min_periods=1).mean().values
+                if np.isnan(vol_ma20[-1]):
+                    errors.append(f"SCAN {scan} {sym}: vol_ma20 is NaN")
+
         if scan % 10 == 0:
             print(f"Scan {scan}/50: {len(bot.positions)} positions, {len(errors)} errors")
 
