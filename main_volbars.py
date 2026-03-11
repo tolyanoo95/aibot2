@@ -59,6 +59,15 @@ def _pfmt(price: float) -> str:
     if ap >= 0.01: return f"{price:.5f}"
     return f"{price:.8f}"
 
+def _prnd(price: float) -> float:
+    """Round price to correct precision for JSON output."""
+    ap = abs(price)
+    if ap >= 1000: return round(price, 2)
+    if ap >= 10: return round(price, 2)
+    if ap >= 1: return round(price, 4)
+    if ap >= 0.01: return round(price, 5)
+    return round(price, 8)
+
 # ── Strategy parameters ──────────────────────────────────────
 SL_MULT = 2.0
 TP_MULT = 4.0
@@ -605,9 +614,9 @@ class VolumeBarsBot:
             "symbol": pos.symbol,
             "direction": pos.direction,
             "dca_number": pos.total_size,
-            "entry_price": price,
-            "avg_price": pos.avg_price,
-            "new_tp": pos.tp,
+            "entry_price": _prnd(price),
+            "avg_price": _prnd(pos.avg_price),
+            "new_tp": _prnd(pos.tp),
             "time": now,
         }
         trades = []
@@ -639,20 +648,21 @@ class VolumeBarsBot:
             f.write(line)
 
         # paper_trades.json
+        p = pos.avg_price
         trade_record = {
             "type": "OPEN",
             "symbol": pos.symbol,
             "direction": pos.direction,
-            "entry_price": pos.avg_price,
-            "sl": pos.hard_sl,
-            "tp": pos.tp,
-            "bar_open": signal.get("bar_open", 0),
-            "bar_high": signal.get("bar_high", 0),
-            "bar_low": signal.get("bar_low", 0),
-            "bar_close": signal.get("bar_close", 0),
-            "atr": signal["atr"],
-            "adx": signal.get("adx", 0),
-            "roc_12": signal.get("roc_12", 0),
+            "entry_price": _prnd(p),
+            "sl": _prnd(pos.hard_sl),
+            "tp": _prnd(pos.tp),
+            "bar_open": _prnd(signal.get("bar_open", 0)),
+            "bar_high": _prnd(signal.get("bar_high", 0)),
+            "bar_low": _prnd(signal.get("bar_low", 0)),
+            "bar_close": _prnd(signal.get("bar_close", 0)),
+            "atr": _prnd(signal["atr"]),
+            "adx": round(signal.get("adx", 0), 1),
+            "roc_12": round(signal.get("roc_12", 0), 2),
             "time": now,
         }
         trades = []
@@ -683,9 +693,9 @@ class VolumeBarsBot:
             "type": "CLOSE",
             "symbol": pos.symbol,
             "direction": pos.direction,
-            "entry_price": pos.avg_price,
-            "exit_price": exit_price,
-            "pnl_pct": round(pnl_pct, 4),
+            "entry_price": _prnd(pos.avg_price),
+            "exit_price": _prnd(exit_price),
+            "pnl_pct": round(pnl_pct, 2),
             "exit_reason": exit_reason,
             "dca_entries": pos.total_size,
             "bars_held": pos.bars_held,
