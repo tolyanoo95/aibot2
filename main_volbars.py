@@ -103,6 +103,8 @@ class VolumeBarsBot:
         self.PAIR_COOLDOWN_SL = 2
         self.PAIR_COOLDOWN_BARS = 8
         self.vol_bar_counts: Dict[str, int] = {}
+        self.vol_history: Dict[str, list] = {}
+        self.time_bar_counts: Dict[str, int] = {}
 
         # Thread lock for shared resources (positions, global_lock, cooldowns)
         self._lock = threading.Lock()
@@ -288,6 +290,10 @@ class VolumeBarsBot:
             self.vol_bars[symbol] = vdf
             self.vol_thresholds[symbol] = df["volume"].iloc[:warmup].median() * 2
 
+            # Init rolling threshold history (last 960 time bars, like backtest)
+            self.vol_history[symbol] = list(df["volume"].values[-960:])
+            self.time_bar_counts[symbol] = len(df)
+
             # Init volume buffer for incremental updates
             self.vol_buffers[symbol] = {
                 "cum_vol": 0, "bar_open": None, "bar_high": None,
@@ -323,6 +329,19 @@ class VolumeBarsBot:
                 base = base[~base.index.duplicated(keep='last')]
                 self.time_data[symbol] = self.indicators.calculate_all(base.tail(1000))
                 self.time_data[symbol] = self.time_data[symbol][~self.time_data[symbol].index.duplicated(keep='last')]
+
+            # Rolling threshold update (every 960 time bars, like backtest)
+            if symbol in self.vol_history:
+                self.vol_history[symbol].append(float(latest["volume"]))
+                if len(self.vol_history[symbol]) > 960:
+                    self.vol_history[symbol] = self.vol_history[symbol][-960:]
+                self.time_bar_counts[symbol] = self.time_bar_counts.get(symbol, 0) + 1
+                if self.time_bar_counts[symbol] % 960 == 0:
+                    new_threshold = float(np.median(self.vol_history[symbol])) * 2
+                    old_threshold = self.vol_thresholds.get(symbol, 0)
+                    self.vol_thresholds[symbol] = new_threshold
+                    if abs(new_threshold - old_threshold) / max(old_threshold, 1) > 0.05:
+                        logger.info(f"  {symbol} threshold updated: {old_threshold:.0f} → {new_threshold:.0f}")
 
             if buf["bar_open"] is None:
                 buf["bar_open"] = latest["open"]
