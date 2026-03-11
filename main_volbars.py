@@ -499,9 +499,37 @@ class VolumeBarsBot:
         if self.pair_dir_cooldowns.get(pair_dir_key, 0) > pair_vb:
             return
 
-        # Skip if already have position on this symbol (DCA handled separately in _try_dca)
-        if any(p.symbol == symbol for p in self.positions):
-            return
+        # Flip: if opposite direction signal, close existing and open new
+        existing = [p for p in self.positions if p.symbol == symbol]
+        if existing:
+            ex = existing[0]
+            if ex.direction == direction:
+                return  # same direction, DCA handled in _try_dca
+            # Flip: close opposite position
+            try:
+                ticker = self.fetcher.exchange.fetch_ticker(symbol)
+                flip_price = float(ticker["last"])
+            except Exception:
+                flip_price = price
+            if ex.direction == "LONG":
+                flip_pnl = (flip_price - ex.avg_price) / ex.avg_price * 100 * ex.total_size
+            else:
+                flip_pnl = (ex.avg_price - flip_price) / ex.avg_price * 100 * ex.total_size
+            logger.info(f"  FLIP {ex.direction}→{direction} {symbol} @ {flip_price:.2f} | PnL {flip_pnl:+.2f}%")
+
+            # Update global lock / pair cooldown
+            pair_vb = self.vol_bar_counts.get(symbol, 0)
+            pair_dir_key_ex = f"{symbol}_{ex.direction}"
+            if flip_pnl < 0:
+                self.pair_sl_streaks[pair_dir_key_ex] = self.pair_sl_streaks.get(pair_dir_key_ex, 0) + 1
+                if self.pair_sl_streaks[pair_dir_key_ex] >= self.PAIR_COOLDOWN_SL:
+                    self.pair_dir_cooldowns[pair_dir_key_ex] = pair_vb + self.PAIR_COOLDOWN_BARS
+            else:
+                self.pair_sl_streaks[pair_dir_key_ex] = 0
+
+            self._log_trade_close(ex, flip_price, "FLIP", flip_pnl)
+            self.positions.remove(ex)
+            self.cooldowns[symbol] = pair_vb + COOLDOWN_BARS
 
         # Max open check for NEW positions only
         if len(self.positions) >= MAX_OPEN:

@@ -373,8 +373,30 @@ def simulate_dca_trades(
             continue
         if pair_dir_cooldowns.get((symbol, direction), 0) > bar_idx:
             continue
-        if any(p.symbol == symbol for p in open_positions):
-            continue
+        existing = [p for p in open_positions if p.symbol == symbol]
+        if existing:
+            ex = existing[0]
+            if ex.direction == direction:
+                continue
+            # Flip: close opposite position, then open new
+            ex.exit_bar = bar_idx
+            ex.exit_price = close[bar_idx]
+            ex.exit_reason = "FLIP"
+            size_mult = ex.total_size if full_size_dca else ex.total_size / max_entries
+            if ex.direction == "LONG":
+                ex.pnl_pct = (ex.exit_price - ex.avg_price) / ex.avg_price * 100 * size_mult
+            else:
+                ex.pnl_pct = (ex.avg_price - ex.exit_price) / ex.avg_price * 100 * size_mult
+            open_positions.remove(ex)
+            trades.append(ex)
+            cooldowns[ex.symbol] = bar_idx + cooldown
+            key = (ex.symbol, ex.direction)
+            if ex.pnl_pct < 0:
+                sl_streaks[key] = sl_streaks.get(key, 0) + 1
+                if sl_streaks[key] >= pair_cooldown_sl:
+                    pair_dir_cooldowns[key] = bar_idx + pair_cooldown_bars
+            else:
+                sl_streaks[key] = 0
 
         a = atr[bar_idx]
         if np.isnan(a) or a <= 0:
