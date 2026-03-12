@@ -142,7 +142,7 @@ def run_test():
     # TEST 3: Verify parameters match backtest
     assert SL_MULT == 2.0, f"SL_MULT={SL_MULT}"
     assert TP_MULT == 4.0, f"TP_MULT={TP_MULT}"
-    assert ADX_MIN == 25, f"ADX_MIN={ADX_MIN}"
+    assert ADX_MIN == 20, f"ADX_MIN={ADX_MIN}"
     assert ATR_EXP_MAX == 1.5, f"ATR_EXP_MAX={ATR_EXP_MAX}"
     assert MAX_OPEN == 11, f"MAX_OPEN={MAX_OPEN}"
 
