@@ -36,17 +36,32 @@ class BinanceDataFetcher:
         limit: int = 200,
         since: Optional[int] = None,
     ) -> pd.DataFrame:
-        """Fetch OHLCV candles and return a DataFrame."""
+        """Fetch OHLCV candles with taker buy volume and num trades from raw Binance API."""
         try:
-            raw = self.exchange.fetch_ohlcv(
-                symbol, timeframe, since=since, limit=limit,
-            )
-            df = pd.DataFrame(
-                raw, columns=["timestamp", "open", "high", "low", "close", "volume"],
-            )
+            params = {"symbol": symbol.replace("/", "").replace(":USDT", ""), "interval": timeframe, "limit": limit}
+            if since:
+                params["startTime"] = since
+            raw = self.exchange.fapiPublicGetKlines(params)
+            rows = []
+            for k in raw:
+                rows.append([
+                    int(k[0]),       # open time
+                    float(k[1]),     # open
+                    float(k[2]),     # high
+                    float(k[3]),     # low
+                    float(k[4]),     # close
+                    float(k[5]),     # volume
+                    float(k[7]),     # quote_volume
+                    int(k[8]),       # num_trades
+                    float(k[9]),     # taker_buy_vol
+                    float(k[10]),    # taker_buy_quote_vol
+                ])
+            df = pd.DataFrame(rows, columns=[
+                "timestamp", "open", "high", "low", "close", "volume",
+                "quote_volume", "num_trades", "taker_buy_vol", "taker_buy_quote_vol",
+            ])
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
             df.set_index("timestamp", inplace=True)
-            df = df.astype(float)
             return df
         except Exception as exc:
             logger.error("fetch_ohlcv %s %s: %s", symbol, timeframe, exc)
