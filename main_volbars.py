@@ -119,8 +119,8 @@ class VolumeBarsBot:
         self.vol_thresholds: Dict[str, float] = {}
         self.positions: List[Position] = []
         self.cooldowns: Dict[str, int] = {}
-        self.global_locked_dir: Optional[str] = None
-        self.global_sl_streak = {"LONG": 0, "SHORT": 0}
+        self.global_locked_dir: Optional[str] = None  # kept for state compat, not used
+        self.global_sl_streak = {"LONG": 0, "SHORT": 0}  # kept for state compat, not used
         self.scan_count = 0
         self.pair_sl_streaks: Dict[str, int] = {}
         self.pair_dir_cooldowns: Dict[str, int] = {}
@@ -479,11 +479,6 @@ class VolumeBarsBot:
             direction = "SHORT"
         else:
             logger.debug(f"  {symbol}: roc={roc_12:+.2f}% (weak) ADX={adx_raw:.0f}")
-            return None
-
-        # Global direction lock
-        if self.global_locked_dir == direction:
-            logger.debug(f"  {symbol}: {direction} LOCKED roc={roc_12:+.2f}%")
             return None
 
         # HTF volume bars trend filter
@@ -996,22 +991,6 @@ class VolumeBarsBot:
                         f"| {exit_reason} | PnL {pnl_pct:+.2f}% | Bars: {pos.bars_held} | DCA: {pos.total_size}"
                     )
 
-                    # Update global direction lock
-                    is_dca_sl = exit_reason == "HARD_SL" and pos.total_size > 1
-                    if is_dca_sl:
-                        self.global_locked_dir = pos.direction
-                        logger.info(f"  LOCK {pos.direction} (DCA SL)")
-                    elif exit_reason == "HARD_SL":
-                        self.global_sl_streak[pos.direction] += 1
-                        if self.global_sl_streak[pos.direction] >= 2:
-                            self.global_locked_dir = pos.direction
-                            logger.info(f"  LOCK {pos.direction} (2 SL streak)")
-                    elif exit_reason == "TP":
-                        self.global_sl_streak[pos.direction] = 0
-                        if self.global_locked_dir == pos.direction:
-                            self.global_locked_dir = None
-                            logger.info(f"  UNLOCK {pos.direction}")
-
                     # Per-pair per-direction SL cooldown (in volume bar units)
                     pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
                     pair_dir_key = f"{pos.symbol}_{pos.direction}"
@@ -1033,7 +1012,7 @@ class VolumeBarsBot:
 
         self.scan_count += 1
         logger.info(f"\n{'='*50}")
-        logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)} | Lock: {self.global_locked_dir or 'none'}")
+        logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)}")
 
         symbols = list(self.vol_bars.keys())
 
@@ -1084,8 +1063,6 @@ class VolumeBarsBot:
 
             if -SHORT_MOM <= roc <= LONG_MOM:
                 summaries.append(f"{short_name}:roc={roc:+.1f}%")
-            elif self.global_locked_dir and ((roc > LONG_MOM and self.global_locked_dir == "LONG") or (roc < -SHORT_MOM and self.global_locked_dir == "SHORT")):
-                summaries.append(f"{short_name}:LOCKED")
             elif adx_v < ADX_MIN:
                 summaries.append(f"{short_name}:ADX={adx_v:.0f}")
             elif (roc > 0 and rsi_s < 0) or (roc < 0 and rsi_s > 0):
@@ -1157,12 +1134,6 @@ class VolumeBarsBot:
                                 pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
                                 self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
 
-                                # Update global lock (like _check_pair_positions)
-                                if pnl_pct >= 0:
-                                    self.global_sl_streak[pos.direction] = 0
-                                    if self.global_locked_dir == pos.direction:
-                                        self.global_locked_dir = None
-                                        logger.info(f"  UNLOCK {pos.direction} (SL_MOVED profit)")
                                 pair_dir_key = f"{pos.symbol}_{pos.direction}"
                                 if pnl_pct < 0:
                                     self.pair_sl_streaks[pair_dir_key] = self.pair_sl_streaks.get(pair_dir_key, 0) + 1

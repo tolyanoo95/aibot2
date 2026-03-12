@@ -211,9 +211,7 @@ def run_volbars_backtest(
     all_trades = []
     fold = 0
     start = 0
-    # Global direction lock: only ONE direction locked at a time, never both
-    global_locked_dir = None  # None, "LONG", or "SHORT"
-    global_sl_streak = {"LONG": 0, "SHORT": 0}
+
 
     min_len = min(len(df) for df in all_pair_data.values())
 
@@ -377,10 +375,6 @@ def run_volbars_backtest(
 
                 conf = 0
                 if direction != "NEUTRAL":
-                    # Global direction lock (only one dir at a time)
-                    if global_locked_dir == direction:
-                        direction = "NEUTRAL"; continue
-
                     # HTF volume bars trend filter
                     htf_e9 = float(df_test["htf_ema_9"].iloc[j]) if "htf_ema_9" in df_test.columns else 0
                     htf_e21 = float(df_test["htf_ema_21"].iloc[j]) if "htf_ema_21" in df_test.columns else 0
@@ -486,21 +480,6 @@ def run_volbars_backtest(
             wins = sum(1 for t in fold_trades if t.pnl_pct > 0)
             wr = wins / len(fold_trades) * 100
             console.print(f"  Fold {fold}: {len(fold_trades)} trades, WR {wr:.0f}%, PnL {pnl:+.2f}%")
-
-        # Update global direction lock: DCA SL = strongest signal of wrong direction
-        for tr in sorted(fold_trades, key=lambda x: getattr(x, 'exit_bar', getattr(x, 'first_bar', 0))):
-            d = tr.direction
-            is_dca_sl = tr.exit_reason in ("SL", "HARD_SL") and hasattr(tr, 'total_size') and tr.total_size > 1
-            if is_dca_sl:
-                global_locked_dir = d  # 1 DCA SL = instant lock (strong signal)
-            elif tr.exit_reason == "TP":
-                global_sl_streak[d] = 0
-                if global_locked_dir == d:
-                    global_locked_dir = None
-            elif tr.exit_reason in ("SL", "HARD_SL"):
-                global_sl_streak[d] += 1
-                if global_sl_streak[d] >= 2:
-                    global_locked_dir = d
 
         all_trades.extend(fold_trades)
         start += test_bars
