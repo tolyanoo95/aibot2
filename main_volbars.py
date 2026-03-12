@@ -709,6 +709,32 @@ class VolumeBarsBot:
         with open(self._paper_trades_file, "w") as f:
             json.dump(trades, f, indent=2)
 
+    def _log_sl_moved(self, pos: Position):
+        """Log SL move event to trades.log + update OPEN in paper_trades.json."""
+        import json
+        from datetime import datetime
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        line = f"{now} SL_MOVED {pos.direction} {pos.symbol} new_sl={_pfmt(pos.hard_sl)} entry={_pfmt(pos.avg_price)} ATR={_pfmt(pos.entry_atr)}\n"
+        with open(self._trades_log, "a") as f:
+            f.write(line)
+
+        trades = []
+        if os.path.exists(self._paper_trades_file):
+            try:
+                with open(self._paper_trades_file) as f:
+                    trades = json.load(f)
+            except Exception:
+                trades = []
+        for t in reversed(trades):
+            if t.get("symbol") == pos.symbol and t.get("status") == "OPEN":
+                t["sl"] = _prnd(pos.hard_sl)
+                t["sl_moved"] = True
+                t["sl_moved_time"] = now
+                break
+        with open(self._paper_trades_file, "w") as f:
+            json.dump(trades, f, indent=2)
+
     def _log_trade_close(self, pos: Position, exit_price: float, exit_reason: str, pnl_pct: float):
         """Log trade close to trades.log + append to paper_trades.json."""
         import json
@@ -919,6 +945,7 @@ class VolumeBarsBot:
                             pos.hard_sl = new_sl
                             pos.sl_moved = True
                             logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(new_sl)} (locked +{MOVE_SL_TO}x ATR)")
+                            self._log_sl_moved(pos)
                     else:
                         profit = pos.avg_price - current_low
                         if profit >= MOVE_SL_AT * ea:
@@ -926,6 +953,7 @@ class VolumeBarsBot:
                             pos.hard_sl = new_sl
                             pos.sl_moved = True
                             logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(new_sl)} (locked +{MOVE_SL_TO}x ATR)")
+                            self._log_sl_moved(pos)
 
                 # Volume Drop early exit (like backtest)
                 vol_drop_exit = False
@@ -1105,27 +1133,43 @@ class VolumeBarsBot:
                                 pos.hard_sl = pos.avg_price + MOVE_SL_TO * ea
                                 pos.sl_moved = True
                                 logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(pos.hard_sl)} (60s check)")
+                                self._log_sl_moved(pos)
                             elif pos.direction == "SHORT" and pos.avg_price - price >= MOVE_SL_AT * ea:
                                 pos.hard_sl = pos.avg_price - MOVE_SL_TO * ea
                                 pos.sl_moved = True
                                 logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(pos.hard_sl)} (60s check)")
+                                self._log_sl_moved(pos)
 
                         # Check if moved SL is hit
                         if pos.sl_moved:
+                            sl_hit = False
                             if pos.direction == "LONG" and price <= pos.hard_sl:
                                 pnl_pct = (pos.hard_sl - pos.avg_price) / pos.avg_price * 100 * pos.total_size
-                                logger.info(f"  SL_HIT {pos.direction} {pos.symbol} @ {_pfmt(pos.hard_sl)} | PnL {pnl_pct:+.2f}% (60s check)")
-                                self._log_trade_close(pos, pos.hard_sl, "SL_MOVED", pnl_pct)
-                                self.positions.remove(pos)
-                                pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
-                                self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
+                                sl_hit = True
                             elif pos.direction == "SHORT" and price >= pos.hard_sl:
                                 pnl_pct = (pos.avg_price - pos.hard_sl) / pos.avg_price * 100 * pos.total_size
+                                sl_hit = True
+
+                            if sl_hit:
                                 logger.info(f"  SL_HIT {pos.direction} {pos.symbol} @ {_pfmt(pos.hard_sl)} | PnL {pnl_pct:+.2f}% (60s check)")
                                 self._log_trade_close(pos, pos.hard_sl, "SL_MOVED", pnl_pct)
                                 self.positions.remove(pos)
                                 pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
                                 self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
+
+                                # Update global lock (like _check_pair_positions)
+                                if pnl_pct >= 0:
+                                    self.global_sl_streak[pos.direction] = 0
+                                    if self.global_locked_dir == pos.direction:
+                                        self.global_locked_dir = None
+                                        logger.info(f"  UNLOCK {pos.direction} (SL_MOVED profit)")
+                                pair_dir_key = f"{pos.symbol}_{pos.direction}"
+                                if pnl_pct < 0:
+                                    self.pair_sl_streaks[pair_dir_key] = self.pair_sl_streaks.get(pair_dir_key, 0) + 1
+                                    if self.pair_sl_streaks[pair_dir_key] >= self.PAIR_COOLDOWN_SL:
+                                        self.pair_dir_cooldowns[pair_dir_key] = pair_vb + self.PAIR_COOLDOWN_BARS
+                                else:
+                                    self.pair_sl_streaks[pair_dir_key] = 0
             except Exception as e:
                 logger.error(f"SL monitor error: {e}")
                 time.sleep(10)
