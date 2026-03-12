@@ -79,9 +79,9 @@ MAX_OPEN = 11
 MAX_DCA = 3
 DCA_STEP_MULT = 1.0
 COOLDOWN_BARS = 3
-TRAIL_ATR = 1.0
-TRAIL_ACTIVATE = 2.0
-TRAIL_CHECK_INTERVAL = 60
+MOVE_SL_AT = 2.0      # activate when profit >= 2.0x ATR
+MOVE_SL_TO = 1.0      # move SL to entry + 1.0x ATR
+MOVE_SL_CHECK = 60    # check every 60 seconds
 WARMUP_DAYS = 60
 SCAN_INTERVAL = 900  # 15 minutes
 
@@ -100,8 +100,7 @@ class Position:
     entry_atr: float = 0.0
     max_price: float = 0.0
     min_price: float = float('inf')
-    trail_active: bool = False
-    best_price: float = 0.0
+    sl_moved: bool = False
 
 
 class VolumeBarsBot:
@@ -169,7 +168,7 @@ class VolumeBarsBot:
                         "total_size": p.total_size, "hard_sl": p.hard_sl,
                         "tp": p.tp, "entry_time": p.entry_time, "bars_held": p.bars_held,
                         "entry_atr": p.entry_atr, "max_price": p.max_price, "min_price": p.min_price,
-                        "trail_active": p.trail_active, "best_price": p.best_price,
+                        "sl_moved": p.sl_moved,
                     } for p in self.positions
                 ],
                 "vol_buffers": {k: {kk: (vv if not isinstance(vv, pd.Timestamp) else str(vv))
@@ -231,8 +230,7 @@ class VolumeBarsBot:
                     entry_atr=p_data.get("entry_atr", 0),
                     max_price=p_data.get("max_price", 0),
                     min_price=p_data.get("min_price", float('inf')),
-                    trail_active=p_data.get("trail_active", False),
-                    best_price=p_data.get("best_price", 0),
+                    sl_moved=p_data.get("sl_moved", False),
                 )
                 self.positions.append(pos)
 
@@ -276,8 +274,7 @@ class VolumeBarsBot:
                         entry_atr=p_data.get("entry_atr", 0),
                         max_price=p_data.get("max_price", 0),
                         min_price=p_data.get("min_price", float('inf')),
-                        trail_active=p_data.get("trail_active", False),
-                        best_price=p_data.get("best_price", 0),
+                        sl_moved=p_data.get("sl_moved", False),
                     )
                     self.positions.append(pos)
                 logger.info(f"  Loaded {len(self.positions)} positions, lock={self.global_locked_dir}")
@@ -621,8 +618,7 @@ class VolumeBarsBot:
             entry_atr=atr_val,
             max_price=price,
             min_price=price,
-            trail_active=False,
-            best_price=price,
+            sl_moved=False,
         )
         self.positions.append(pos)
 
@@ -914,26 +910,22 @@ class VolumeBarsBot:
                     hit_tp = current_low <= pos.tp
                     hit_sl = current_high >= effective_sl
 
-                # Trailing stop
-                trail_hit = False
-                if pos.direction == "LONG":
-                    pos.best_price = max(pos.best_price, current_high, current_price)
-                    trail_profit = pos.best_price - pos.avg_price
-                    if trail_profit >= TRAIL_ACTIVATE * ea:
-                        pos.trail_active = True
-                        trail_sl = pos.best_price - TRAIL_ATR * ea
-                        if current_low <= trail_sl:
-                            trail_hit = True
-                            trail_exit_price = trail_sl
-                else:
-                    pos.best_price = min(pos.best_price, current_low, current_price) if pos.best_price > 0 else current_low
-                    trail_profit = pos.avg_price - pos.best_price
-                    if trail_profit >= TRAIL_ACTIVATE * ea:
-                        pos.trail_active = True
-                        trail_sl = pos.best_price + TRAIL_ATR * ea
-                        if current_high >= trail_sl:
-                            trail_hit = True
-                            trail_exit_price = trail_sl
+                # Move SL: when profit >= 2.0 ATR → move SL to entry + 1.0 ATR
+                if not pos.sl_moved and ea > 0:
+                    if pos.direction == "LONG":
+                        profit = current_high - pos.avg_price
+                        if profit >= MOVE_SL_AT * ea:
+                            new_sl = pos.avg_price + MOVE_SL_TO * ea
+                            pos.hard_sl = new_sl
+                            pos.sl_moved = True
+                            logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(new_sl)} (locked +{MOVE_SL_TO}x ATR)")
+                    else:
+                        profit = pos.avg_price - current_low
+                        if profit >= MOVE_SL_AT * ea:
+                            new_sl = pos.avg_price - MOVE_SL_TO * ea
+                            pos.hard_sl = new_sl
+                            pos.sl_moved = True
+                            logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(new_sl)} (locked +{MOVE_SL_TO}x ATR)")
 
                 # Volume Drop early exit (like backtest)
                 vol_drop_exit = False
@@ -958,9 +950,6 @@ class VolumeBarsBot:
                 elif hit_tp:
                     exit_reason = "TP"
                     exit_price = pos.tp
-                elif trail_hit:
-                    exit_reason = "TRAIL"
-                    exit_price = trail_exit_price
                 elif vol_drop_exit:
                     exit_reason = "VOL_DROP"
                     exit_price = current_price
@@ -1042,7 +1031,7 @@ class VolumeBarsBot:
                     f"  HOLDING: {pos.direction} {pos.symbol} entry={_pfmt(pos.avg_price)} "
                     f"now={_pfmt(current)} PnL={unrealized:+.2f}% bars={pos.bars_held} dca={pos.total_size} "
                     f"high={_pfmt(pos.max_price)} low={_pfmt(pos.min_price)}"
-                    f"{' TRAIL_ACTIVE' if pos.trail_active else ''}"
+                    f"{' SL_MOVED' if pos.sl_moved else ''}"
                 )
 
         logger.info(f"  Positions: {len(self.positions)} | Total pairs: {len(self.vol_bars)}")
@@ -1082,17 +1071,17 @@ class VolumeBarsBot:
         # Save state to disk after every scan
         self._save_state()
 
-    def _trail_monitor(self):
-        """Daemon thread: check trailing stop every 60s for active trail positions."""
+    def _sl_monitor(self):
+        """Daemon thread: check move SL activation + SL hit every 60s."""
         while True:
             try:
-                time.sleep(TRAIL_CHECK_INTERVAL)
+                time.sleep(MOVE_SL_CHECK)
                 with self._lock:
-                    trail_positions = [p for p in self.positions if p.trail_active]
-                if not trail_positions:
+                    active_positions = list(self.positions)
+                if not active_positions:
                     continue
 
-                for pos in trail_positions:
+                for pos in active_positions:
                     try:
                         ticker = self.fetcher.exchange.fetch_ticker(pos.symbol)
                         price = float(ticker["last"])
@@ -1107,30 +1096,38 @@ class VolumeBarsBot:
                         if pos not in self.positions:
                             continue
 
-                        if pos.direction == "LONG":
-                            pos.best_price = max(pos.best_price, price)
-                            pos.max_price = max(pos.max_price, price)
-                            trail_sl = pos.best_price - TRAIL_ATR * ea
-                            if price <= trail_sl:
-                                pnl_pct = (trail_sl - pos.avg_price) / pos.avg_price * 100 * pos.total_size
-                                logger.info(f"  TRAIL {pos.direction} {pos.symbol} @ {_pfmt(trail_sl)} | PnL {pnl_pct:+.2f}% (best={_pfmt(pos.best_price)})")
-                                self._log_trade_close(pos, trail_sl, "TRAIL", pnl_pct)
+                        pos.max_price = max(pos.max_price, price)
+                        pos.min_price = min(pos.min_price, price)
+
+                        # Move SL if not yet moved
+                        if not pos.sl_moved:
+                            if pos.direction == "LONG" and price - pos.avg_price >= MOVE_SL_AT * ea:
+                                pos.hard_sl = pos.avg_price + MOVE_SL_TO * ea
+                                pos.sl_moved = True
+                                logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(pos.hard_sl)} (60s check)")
+                            elif pos.direction == "SHORT" and pos.avg_price - price >= MOVE_SL_AT * ea:
+                                pos.hard_sl = pos.avg_price - MOVE_SL_TO * ea
+                                pos.sl_moved = True
+                                logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(pos.hard_sl)} (60s check)")
+
+                        # Check if moved SL is hit
+                        if pos.sl_moved:
+                            if pos.direction == "LONG" and price <= pos.hard_sl:
+                                pnl_pct = (pos.hard_sl - pos.avg_price) / pos.avg_price * 100 * pos.total_size
+                                logger.info(f"  SL_HIT {pos.direction} {pos.symbol} @ {_pfmt(pos.hard_sl)} | PnL {pnl_pct:+.2f}% (60s check)")
+                                self._log_trade_close(pos, pos.hard_sl, "SL_MOVED", pnl_pct)
                                 self.positions.remove(pos)
                                 pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
                                 self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
-                        else:
-                            pos.best_price = min(pos.best_price, price) if pos.best_price > 0 else price
-                            pos.min_price = min(pos.min_price, price)
-                            trail_sl = pos.best_price + TRAIL_ATR * ea
-                            if price >= trail_sl:
-                                pnl_pct = (pos.avg_price - trail_sl) / pos.avg_price * 100 * pos.total_size
-                                logger.info(f"  TRAIL {pos.direction} {pos.symbol} @ {_pfmt(trail_sl)} | PnL {pnl_pct:+.2f}% (best={_pfmt(pos.best_price)})")
-                                self._log_trade_close(pos, trail_sl, "TRAIL", pnl_pct)
+                            elif pos.direction == "SHORT" and price >= pos.hard_sl:
+                                pnl_pct = (pos.avg_price - pos.hard_sl) / pos.avg_price * 100 * pos.total_size
+                                logger.info(f"  SL_HIT {pos.direction} {pos.symbol} @ {_pfmt(pos.hard_sl)} | PnL {pnl_pct:+.2f}% (60s check)")
+                                self._log_trade_close(pos, pos.hard_sl, "SL_MOVED", pnl_pct)
                                 self.positions.remove(pos)
                                 pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
                                 self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
             except Exception as e:
-                logger.error(f"Trail monitor error: {e}")
+                logger.error(f"SL monitor error: {e}")
                 time.sleep(10)
 
     @staticmethod
@@ -1164,11 +1161,11 @@ class VolumeBarsBot:
             self.scan()
             return
 
-        # Start trail monitor thread
+        # Start SL monitor thread (checks move SL + SL hit every 60s)
         import threading
-        trail_thread = threading.Thread(target=self._trail_monitor, daemon=True)
-        trail_thread.start()
-        logger.info(f"Trail monitor started (check every {TRAIL_CHECK_INTERVAL}s)")
+        sl_thread = threading.Thread(target=self._sl_monitor, daemon=True)
+        sl_thread.start()
+        logger.info(f"SL monitor started (check every {MOVE_SL_CHECK}s, move at +{MOVE_SL_AT}x ATR to +{MOVE_SL_TO}x ATR)")
 
         logger.info(f"Starting scan loop (aligned to 15m bar close)...")
         while True:
