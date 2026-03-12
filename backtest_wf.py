@@ -229,6 +229,8 @@ def simulate_dca_trades(
     pair_cooldown_bars: int = 8,
     full_size_dca: bool = False,
     early_exit: str = "",
+    trail_atr: float = 1.0,
+    trail_activate: float = 2.0,
 ) -> List[DcaTrade]:
     """DCA v2: 5 improvements to reduce HARD_SL losses."""
     trades: List[DcaTrade] = []
@@ -365,6 +367,28 @@ def simulate_dca_trades(
                 hit_tp = low[bar_idx] <= pos.tp
                 hit_sl = high[bar_idx] >= max(pos.hard_sl, dynamic_hard_sl)
 
+            # Trailing stop
+            trail_hit = False
+            if trail_atr > 0 and trail_activate > 0:
+                if not hasattr(pos, '_best'):
+                    pos._best = pos.entries[0][0]
+                if pos.direction == "LONG":
+                    pos._best = max(pos._best, high[bar_idx])
+                    trail_profit = pos._best - pos.avg_price
+                    if trail_profit >= trail_activate * entry_atr:
+                        trail_sl = pos._best - trail_atr * entry_atr
+                        if low[bar_idx] <= trail_sl:
+                            trail_hit = True
+                            trail_exit_price = trail_sl
+                else:
+                    pos._best = min(pos._best, low[bar_idx])
+                    trail_profit = pos.avg_price - pos._best
+                    if trail_profit >= trail_activate * entry_atr:
+                        trail_sl = pos._best + trail_atr * entry_atr
+                        if high[bar_idx] >= trail_sl:
+                            trail_hit = True
+                            trail_exit_price = trail_sl
+
             # Fix 4: DCA timeout — close DCA positions after 24 bars
             dca_timeout = pos.total_size > 1 and bars_held >= 24
 
@@ -380,6 +404,10 @@ def simulate_dca_trades(
             elif hit_tp:
                 pos.exit_price = pos.tp
                 pos.exit_reason = "TP"
+                closed = True
+            elif trail_hit:
+                pos.exit_price = trail_exit_price
+                pos.exit_reason = "TRAIL"
                 closed = True
             elif early_closed:
                 closed = True
