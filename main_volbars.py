@@ -1127,14 +1127,14 @@ class VolumeBarsBot:
                         pos.max_price = max(pos.max_price, price)
                         pos.min_price = min(pos.min_price, price)
 
-                        # Move SL if not yet moved
+                        # Move SL if not yet moved (use max/min price like backtest uses high/low)
                         if not pos.sl_moved:
-                            if pos.direction == "LONG" and price - pos.avg_price >= MOVE_SL_AT * ea:
+                            if pos.direction == "LONG" and pos.max_price - pos.avg_price >= MOVE_SL_AT * ea:
                                 pos.hard_sl = pos.avg_price + MOVE_SL_TO * ea
                                 pos.sl_moved = True
                                 logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(pos.hard_sl)} (60s check)")
                                 self._log_sl_moved(pos)
-                            elif pos.direction == "SHORT" and pos.avg_price - price >= MOVE_SL_AT * ea:
+                            elif pos.direction == "SHORT" and pos.avg_price - pos.min_price >= MOVE_SL_AT * ea:
                                 pos.hard_sl = pos.avg_price - MOVE_SL_TO * ea
                                 pos.sl_moved = True
                                 logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(pos.hard_sl)} (60s check)")
