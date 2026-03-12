@@ -120,7 +120,6 @@ def run_volbars_backtest(
     console.print(f"Train: {train_bars} bars | Test: {test_bars} bars")
     console.print(f"SL={sl_mult}x TP={tp_mult}x | Conf>{conf_threshold}\n")
 
-    fetcher = BinanceDataFetcher(config)
     indicators = TechnicalIndicators()
     fe = FeatureEngineer()
     sig_gen = SignalGenerator(config)
@@ -131,15 +130,34 @@ def run_volbars_backtest(
     BARS_15M = 96
     total_candles = total_days * BARS_15M
 
-    console.print(f"[cyan]Fetching 15m data and converting to volume bars (no lookahead)...[/cyan]")
+    # Try cache first, fallback to API
+    cache_file = "data/ohlcv_cache_15m.pkl"
+    raw_data = {}
+    if os.path.exists(cache_file):
+        import pickle
+        with open(cache_file, "rb") as f:
+            raw_data = pickle.load(f)
+        console.print(f"[cyan]Loaded {len(raw_data)} pairs from cache[/cyan]")
+    else:
+        console.print(f"[cyan]No cache, fetching from API...[/cyan]")
+        fetcher = BinanceDataFetcher(config)
+        for symbol in trading_pairs:
+            df = fetcher.fetch_ohlcv_extended(symbol, "15m", total_candles=total_candles)
+            if not df.empty:
+                raw_data[symbol] = df
+
     all_pair_data = {}
-    all_time_data = {}  # time bars for realistic ATR
+    all_time_data = {}
     for symbol in trading_pairs:
-        df = fetcher.fetch_ohlcv_extended(symbol, "15m", total_candles=total_candles)
-        if df.empty or len(df) < 200:
+        if symbol not in raw_data:
+            continue
+        df = raw_data[symbol]
+        # Trim to requested days if cache has more
+        if len(df) > total_candles:
+            df = df.iloc[-total_candles:]
+        if len(df) < 200:
             continue
 
-        # Keep time bars for ATR
         tdf = indicators.calculate_all(df.copy())
         all_time_data[symbol] = tdf
 
@@ -148,18 +166,15 @@ def run_volbars_backtest(
             console.print(f"  [yellow]{symbol}: only {len(vdf)} vol bars, skipping[/yellow]")
             continue
 
-        # HTF volume bars (5x bigger threshold) for trend detection
         htf_vdf = resample_to_volume_bars(df, initial_threshold=df["volume"].iloc[:1920].median() * 10 if len(df) > 1920 else df["volume"].median() * 10)
         if len(htf_vdf) > 20:
             htf_vdf = indicators.calculate_all(htf_vdf)
-            # Forward-fill HTF EMA to primary volume bar timestamps
             for col in ["ema_9", "ema_21", "ema_50"]:
                 if col in htf_vdf.columns:
                     vdf[f"htf_{col}"] = htf_vdf[col].reindex(vdf.index, method="ffill")
 
         vdf = indicators.calculate_all(vdf)
 
-        # Replace volume bar ATR with time bar ATR (forward-filled to volume bar timestamps)
         time_atr = tdf["atr"].reindex(vdf.index, method="ffill")
         vdf["atr"] = time_atr.values
 
@@ -206,6 +221,8 @@ def run_volbars_backtest(
         fold += 1
         train_end = start + train_bars
         test_end = train_end + test_bars
+
+        console.print(f"  Fold {fold}: training [{start}:{train_end}] testing [{train_end}:{test_end}]...", end=" ")
 
         # === TRAIN ===
         train_data = {
