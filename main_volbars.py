@@ -310,6 +310,12 @@ class VolumeBarsBot:
                 for col in ["ema_9", "ema_21", "ema_50"]:
                     if col in htf_vdf.columns:
                         vdf[f"htf_{col}"] = htf_vdf[col].reindex(vdf.index, method="ffill")
+                import pandas_ta as pta
+                st = pta.supertrend(htf_vdf["high"], htf_vdf["low"], htf_vdf["close"], length=9, multiplier=3.0)
+                if st is not None:
+                    for sc in st.columns:
+                        if "SUPERTd" in sc:
+                            vdf["htf_supertrend"] = st[sc].reindex(vdf.index, method="ffill")
                 self.htf_vol_bars[symbol] = htf_vdf
 
             vdf = self.indicators.calculate_all(vdf)
@@ -408,12 +414,21 @@ class VolumeBarsBot:
                     )
                     self.vol_bars[symbol]["atr"] = time_atr.values
 
-                # Re-apply HTF EMA values (lost after OHLCV-only recalculate)
+                # Re-apply HTF EMA + Supertrend values (lost after OHLCV-only recalculate)
                 if symbol in self.htf_vol_bars:
                     for col in ["ema_9", "ema_21", "ema_50"]:
                         if col in self.htf_vol_bars[symbol].columns:
                             self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(
                                 self.vol_bars[symbol].index, method="ffill")
+                    import pandas_ta as pta
+                    htf_df = self.htf_vol_bars[symbol]
+                    if "high" in htf_df.columns and "low" in htf_df.columns:
+                        st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
+                        if st is not None:
+                            for sc in st.columns:
+                                if "SUPERTd" in sc:
+                                    self.vol_bars[symbol]["htf_supertrend"] = st[sc].reindex(
+                                        self.vol_bars[symbol].index, method="ffill")
 
                 # Update HTF volume bars (5x threshold)
                 if symbol in self.htf_vol_bars:
@@ -440,6 +455,13 @@ class VolumeBarsBot:
                         for col in ["ema_9", "ema_21", "ema_50"]:
                             if col in self.htf_vol_bars[symbol].columns:
                                 self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(self.vol_bars[symbol].index, method="ffill")
+                        import pandas_ta as pta
+                        htf_df = self.htf_vol_bars[symbol]
+                        st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
+                        if st is not None:
+                            for sc in st.columns:
+                                if "SUPERTd" in sc:
+                                    self.vol_bars[symbol]["htf_supertrend"] = st[sc].reindex(self.vol_bars[symbol].index, method="ffill")
                         htf_buf = {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None}
                     if not hasattr(self, '_htf_buffers'):
                         self._htf_buffers = {}
@@ -481,15 +503,14 @@ class VolumeBarsBot:
             logger.debug(f"  {symbol}: roc={roc_12:+.2f}% (weak) ADX={adx_raw:.0f}")
             return None
 
-        # HTF volume bars trend filter
-        htf_e9 = float(vdf["htf_ema_9"].iloc[j]) if "htf_ema_9" in vdf.columns else 0
-        htf_e21 = float(vdf["htf_ema_21"].iloc[j]) if "htf_ema_21" in vdf.columns else 0
-        if htf_e9 > 0 and htf_e21 > 0:
-            if direction == "LONG" and htf_e9 < htf_e21:
-                logger.debug(f"  {symbol}: {direction} blocked by HTF (downtrend) roc={roc_12:+.2f}%")
+        # HTF Supertrend trend filter (+11.2% vs EMA, stable across 2023-2025)
+        htf_st = float(vdf["htf_supertrend"].iloc[j]) if "htf_supertrend" in vdf.columns else 0
+        if not np.isnan(htf_st) and htf_st != 0:
+            if direction == "LONG" and htf_st < 0:
+                logger.debug(f"  {symbol}: {direction} blocked by HTF Supertrend (downtrend) roc={roc_12:+.2f}%")
                 return None
-            if direction == "SHORT" and htf_e9 > htf_e21:
-                logger.debug(f"  {symbol}: {direction} blocked by HTF (uptrend) roc={roc_12:+.2f}%")
+            if direction == "SHORT" and htf_st > 0:
+                logger.debug(f"  {symbol}: {direction} blocked by HTF Supertrend (uptrend) roc={roc_12:+.2f}%")
                 return None
 
         # ATR expansion filter

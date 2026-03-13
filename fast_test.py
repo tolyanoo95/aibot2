@@ -36,6 +36,12 @@ def load_and_prepare():
             for col in ["ema_9", "ema_21", "ema_50"]:
                 if col in htf_vdf.columns:
                     vdf[f"htf_{col}"] = htf_vdf[col].reindex(vdf.index, method="ffill")
+            import pandas_ta as pta
+            st = pta.supertrend(htf_vdf["high"], htf_vdf["low"], htf_vdf["close"], length=9, multiplier=3.0)
+            if st is not None:
+                for sc in st.columns:
+                    if "SUPERTd" in sc:
+                        vdf["htf_supertrend"] = st[sc].reindex(vdf.index, method="ffill")
         vdf = indicators.calculate_all(vdf)
         time_atr = tdf["atr"].reindex(vdf.index, method="ffill")
         vdf["atr"] = time_atr.values
@@ -74,11 +80,10 @@ def run_test(data, sl_mult=2.0, tp_mult=4.0, train_bars=1000, test_bars=300):
                 conf = 0
                 if direction != "NEUTRAL":
                     if global_locked_dir == direction: direction = "NEUTRAL"; continue
-                    htf_e9 = float(df_test["htf_ema_9"].iloc[j]) if "htf_ema_9" in df_test.columns else 0
-                    htf_e21 = float(df_test["htf_ema_21"].iloc[j]) if "htf_ema_21" in df_test.columns else 0
-                    if htf_e9 > 0 and htf_e21 > 0:
-                        if direction == "LONG" and htf_e9 < htf_e21: direction = "NEUTRAL"; continue
-                        if direction == "SHORT" and htf_e9 > htf_e21: direction = "NEUTRAL"; continue
+                    htf_st = float(df_test["htf_supertrend"].iloc[j]) if "htf_supertrend" in df_test.columns else 0
+                    if not np.isnan(htf_st) and htf_st != 0:
+                        if direction == "LONG" and htf_st < 0: direction = "NEUTRAL"; continue
+                        if direction == "SHORT" and htf_st > 0: direction = "NEUTRAL"; continue
                     atr_exp = atr_test[j] / atr_ma20[j] if atr_ma20[j] > 0 else 1.0
                     if atr_exp > 1.5: direction = "NEUTRAL"; continue
                     adx = float(df_test["ADX_14"].iloc[j]) if "ADX_14" in df_test.columns else 25
