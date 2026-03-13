@@ -233,6 +233,8 @@ def simulate_dca_trades(
     trail_activate: float = 0,
     move_sl_at: float = 2.0,
     move_sl_to: float = 1.0,
+    move_sl_steps: list = None,
+    move_sl_trail: float = 0,
 ) -> List[DcaTrade]:
     """DCA v2: 5 improvements to reduce HARD_SL losses."""
     trades: List[DcaTrade] = []
@@ -391,18 +393,34 @@ def simulate_dca_trades(
                             trail_hit = True
                             trail_exit_price = trail_sl
 
-            # Move SL: when profit >= X ATR → move hard_sl to entry + Y ATR
-            if move_sl_at > 0 and not hasattr(pos, '_sl_moved'):
-                pos._sl_moved = False
-            if move_sl_at > 0 and not pos._sl_moved:
-                if pos.direction == "LONG":
-                    if high[bar_idx] - pos.avg_price >= move_sl_at * entry_atr:
-                        pos.hard_sl = pos.avg_price + move_sl_to * entry_atr
-                        pos._sl_moved = True
-                else:
-                    if pos.avg_price - low[bar_idx] >= move_sl_at * entry_atr:
-                        pos.hard_sl = pos.avg_price - move_sl_to * entry_atr
-                        pos._sl_moved = True
+            # Move SL: single or multi-step, then optional trail
+            if not hasattr(pos, '_sl_step'):
+                pos._sl_step = 0
+            if not hasattr(pos, '_best_price'):
+                pos._best_price = pos.avg_price
+            if move_sl_at > 0:
+                steps = move_sl_steps if move_sl_steps else [(move_sl_at, move_sl_to)]
+                if pos._sl_step < len(steps):
+                    step_at, step_to = steps[pos._sl_step]
+                    if pos.direction == "LONG":
+                        if high[bar_idx] - pos.avg_price >= step_at * entry_atr:
+                            pos.hard_sl = pos.avg_price + step_to * entry_atr
+                            pos._sl_step += 1
+                    else:
+                        if pos.avg_price - low[bar_idx] >= step_at * entry_atr:
+                            pos.hard_sl = pos.avg_price - step_to * entry_atr
+                            pos._sl_step += 1
+                elif move_sl_trail > 0 and pos._sl_step >= len(steps):
+                    if pos.direction == "LONG":
+                        pos._best_price = max(pos._best_price, high[bar_idx])
+                        new_sl = pos._best_price - move_sl_trail * entry_atr
+                        if new_sl > pos.hard_sl:
+                            pos.hard_sl = new_sl
+                    else:
+                        pos._best_price = min(pos._best_price, low[bar_idx])
+                        new_sl = pos._best_price + move_sl_trail * entry_atr
+                        if new_sl < pos.hard_sl:
+                            pos.hard_sl = new_sl
 
             # Fix 4: DCA timeout — close DCA positions after 24 bars
             dca_timeout = pos.total_size > 1 and bars_held >= 24

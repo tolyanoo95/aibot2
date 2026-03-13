@@ -79,8 +79,8 @@ MAX_OPEN = 11
 MAX_DCA = 3
 DCA_STEP_MULT = 1.0
 COOLDOWN_BARS = 3
-MOVE_SL_AT = 2.0      # activate when profit >= 2.0x ATR
-MOVE_SL_TO = 1.0      # move SL to entry + 1.0x ATR
+MOVE_SL_STEPS = [(0.5, 0.0), (1.0, 0.5), (2.0, 1.0)]  # (activate_at, move_to) in ATR
+MOVE_SL_TRAIL = 1.0   # after all steps: trail SL at this distance from best price (ATR)
 MOVE_SL_CHECK = 60    # check every 60 seconds
 WARMUP_DAYS = 60
 SCAN_INTERVAL = 900  # 15 minutes
@@ -101,6 +101,8 @@ class Position:
     max_price: float = 0.0
     min_price: float = float('inf')
     sl_moved: bool = False
+    sl_step: int = 0
+    best_price: float = 0.0
 
 
 class VolumeBarsBot:
@@ -168,7 +170,7 @@ class VolumeBarsBot:
                         "total_size": p.total_size, "hard_sl": p.hard_sl,
                         "tp": p.tp, "entry_time": p.entry_time, "bars_held": p.bars_held,
                         "entry_atr": p.entry_atr, "max_price": p.max_price, "min_price": p.min_price,
-                        "sl_moved": p.sl_moved,
+                        "sl_moved": p.sl_moved, "sl_step": p.sl_step, "best_price": p.best_price,
                     } for p in self.positions
                 ],
                 "vol_buffers": {k: {kk: (vv if not isinstance(vv, pd.Timestamp) else str(vv))
@@ -272,12 +274,14 @@ class VolumeBarsBot:
                         tp=p_data["tp"], entry_time=p_data.get("entry_time", 0),
                         bars_held=p_data.get("bars_held", 0),
                         entry_atr=p_data.get("entry_atr", 0),
-                        max_price=p_data.get("max_price", 0),
-                        min_price=p_data.get("min_price", float('inf')),
-                        sl_moved=p_data.get("sl_moved", False),
-                    )
-                    self.positions.append(pos)
-                logger.info(f"  Loaded {len(self.positions)} positions, lock={self.global_locked_dir}")
+                    max_price=p_data.get("max_price", 0),
+                    min_price=p_data.get("min_price", float('inf')),
+                    sl_moved=p_data.get("sl_moved", False),
+                    sl_step=p_data.get("sl_step", 0),
+                    best_price=p_data.get("best_price", p_data.get("max_price", 0)),
+                )
+                self.positions.append(pos)
+            logger.info(f"  Loaded {len(self.positions)} positions, lock={self.global_locked_dir}")
             except Exception as e:
                 logger.error(f"  State load error: {e}")
 
@@ -635,6 +639,8 @@ class VolumeBarsBot:
             max_price=price,
             min_price=price,
             sl_moved=False,
+            sl_step=0,
+            best_price=price,
         )
         self.positions.append(pos)
 
@@ -952,24 +958,33 @@ class VolumeBarsBot:
                     hit_tp = current_low <= pos.tp
                     hit_sl = current_high >= effective_sl
 
-                # Move SL: when profit >= 2.0 ATR → move SL to entry + 1.0 ATR
-                if not pos.sl_moved and ea > 0:
-                    if pos.direction == "LONG":
-                        profit = current_high - pos.avg_price
-                        if profit >= MOVE_SL_AT * ea:
-                            new_sl = pos.avg_price + MOVE_SL_TO * ea
+                # Multi-step Move SL + trail
+                if ea > 0:
+                    if pos.sl_step < len(MOVE_SL_STEPS):
+                        step_at, step_to = MOVE_SL_STEPS[pos.sl_step]
+                        triggered = False
+                        if pos.direction == "LONG" and current_high - pos.avg_price >= step_at * ea:
+                            triggered = True
+                        elif pos.direction == "SHORT" and pos.avg_price - current_low >= step_at * ea:
+                            triggered = True
+                        if triggered:
+                            new_sl = pos.avg_price + step_to * ea if pos.direction == "LONG" else pos.avg_price - step_to * ea
                             pos.hard_sl = new_sl
+                            pos.sl_step += 1
                             pos.sl_moved = True
-                            logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(new_sl)} (locked +{MOVE_SL_TO}x ATR)")
+                            logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(new_sl)}")
                             self._log_sl_moved(pos)
-                    else:
-                        profit = pos.avg_price - current_low
-                        if profit >= MOVE_SL_AT * ea:
-                            new_sl = pos.avg_price - MOVE_SL_TO * ea
+                    elif MOVE_SL_TRAIL > 0:
+                        if pos.direction == "LONG":
+                            pos.best_price = max(pos.best_price, current_high)
+                            new_sl = pos.best_price - MOVE_SL_TRAIL * ea
+                        else:
+                            pos.best_price = min(pos.best_price, current_low)
+                            new_sl = pos.best_price + MOVE_SL_TRAIL * ea
+                        if (pos.direction == "LONG" and new_sl > pos.hard_sl) or \
+                           (pos.direction == "SHORT" and new_sl < pos.hard_sl):
                             pos.hard_sl = new_sl
-                            pos.sl_moved = True
-                            logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(new_sl)} (locked +{MOVE_SL_TO}x ATR)")
-                            self._log_sl_moved(pos)
+                            logger.debug(f"  TRAIL {pos.symbol} {pos.direction} → {_pfmt(new_sl)}")
 
                 # Volume Drop early exit (like backtest)
                 vol_drop_exit = False
@@ -1125,18 +1140,31 @@ class VolumeBarsBot:
                         pos.max_price = max(pos.max_price, price)
                         pos.min_price = min(pos.min_price, price)
 
-                        # Move SL if not yet moved (use max/min price like backtest uses high/low)
-                        if not pos.sl_moved:
-                            if pos.direction == "LONG" and pos.max_price - pos.avg_price >= MOVE_SL_AT * ea:
-                                pos.hard_sl = pos.avg_price + MOVE_SL_TO * ea
+                        # Multi-step Move SL + trail (60s check)
+                        if pos.sl_step < len(MOVE_SL_STEPS):
+                            step_at, step_to = MOVE_SL_STEPS[pos.sl_step]
+                            triggered = False
+                            if pos.direction == "LONG" and pos.max_price - pos.avg_price >= step_at * ea:
+                                triggered = True
+                            elif pos.direction == "SHORT" and pos.avg_price - pos.min_price >= step_at * ea:
+                                triggered = True
+                            if triggered:
+                                new_sl = pos.avg_price + step_to * ea if pos.direction == "LONG" else pos.avg_price - step_to * ea
+                                pos.hard_sl = new_sl
+                                pos.sl_step += 1
                                 pos.sl_moved = True
-                                logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(pos.hard_sl)} (60s check)")
+                                logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(new_sl)} (60s check)")
                                 self._log_sl_moved(pos)
-                            elif pos.direction == "SHORT" and pos.avg_price - pos.min_price >= MOVE_SL_AT * ea:
-                                pos.hard_sl = pos.avg_price - MOVE_SL_TO * ea
-                                pos.sl_moved = True
-                                logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} → {_pfmt(pos.hard_sl)} (60s check)")
-                                self._log_sl_moved(pos)
+                        elif MOVE_SL_TRAIL > 0:
+                            if pos.direction == "LONG":
+                                pos.best_price = max(pos.best_price, price)
+                                new_sl = pos.best_price - MOVE_SL_TRAIL * ea
+                            else:
+                                pos.best_price = min(pos.best_price, price)
+                                new_sl = pos.best_price + MOVE_SL_TRAIL * ea
+                            if (pos.direction == "LONG" and new_sl > pos.hard_sl) or \
+                               (pos.direction == "SHORT" and new_sl < pos.hard_sl):
+                                pos.hard_sl = new_sl
 
                         # Check if moved SL is hit
                         if pos.sl_moved:
@@ -1201,7 +1229,7 @@ class VolumeBarsBot:
         import threading
         sl_thread = threading.Thread(target=self._sl_monitor, daemon=True)
         sl_thread.start()
-        logger.info(f"SL monitor started (check every {MOVE_SL_CHECK}s, move at +{MOVE_SL_AT}x ATR to +{MOVE_SL_TO}x ATR)")
+        logger.info(f"SL monitor started (check every {MOVE_SL_CHECK}s, {len(MOVE_SL_STEPS)}-step + trail {MOVE_SL_TRAIL}x ATR)")
 
         logger.info(f"Starting scan loop (aligned to 15m bar close)...")
         while True:
