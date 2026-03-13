@@ -1115,7 +1115,8 @@ class VolumeBarsBot:
         self._save_state()
 
     def _sl_monitor(self):
-        """Daemon thread: check move SL activation + SL hit every 60s."""
+        """Daemon thread: check move SL activation + SL hit every 15s."""
+        from concurrent.futures import ThreadPoolExecutor
         while True:
             try:
                 time.sleep(MOVE_SL_CHECK)
@@ -1124,11 +1125,23 @@ class VolumeBarsBot:
                 if not active_positions:
                     continue
 
-                for pos in active_positions:
+                def fetch_price(sym):
                     try:
-                        ticker = self.fetcher.exchange.fetch_ticker(pos.symbol)
-                        price = float(ticker["last"])
+                        t = self.fetcher.exchange.fetch_ticker(sym)
+                        return sym, float(t["last"])
                     except Exception:
+                        return sym, None
+
+                symbols = list(set(p.symbol for p in active_positions))
+                prices = {}
+                with ThreadPoolExecutor(max_workers=len(symbols)) as pool:
+                    for sym, price in pool.map(fetch_price, symbols):
+                        if price is not None:
+                            prices[sym] = price
+
+                for pos in active_positions:
+                    price = prices.get(pos.symbol)
+                    if price is None:
                         continue
 
                     ea = pos.entry_atr if pos.entry_atr > 0 else 0
