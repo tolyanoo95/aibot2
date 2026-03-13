@@ -737,7 +737,7 @@ class VolumeBarsBot:
         from datetime import datetime
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        line = f"{now} SL_MOVED {pos.direction} {pos.symbol} new_sl={_pfmt(pos.hard_sl)} entry={_pfmt(pos.avg_price)} ATR={_pfmt(pos.entry_atr)}\n"
+        line = f"{now} SL_MOVED {pos.direction} {pos.symbol} step {pos.sl_step}/{len(MOVE_SL_STEPS)} new_sl={_pfmt(pos.hard_sl)} entry={_pfmt(pos.avg_price)} ATR={_pfmt(pos.entry_atr)}\n"
         with open(self._trades_log, "a") as f:
             f.write(line)
 
@@ -753,6 +753,7 @@ class VolumeBarsBot:
                 t["sl"] = _prnd(pos.hard_sl)
                 t["sl_moved"] = True
                 t["sl_moved_time"] = now
+                t["sl_step"] = pos.sl_step
                 break
         with open(self._paper_trades_file, "w") as f:
             json.dump(trades, f, indent=2)
@@ -771,8 +772,9 @@ class VolumeBarsBot:
         else:
             mfe = (pos.avg_price - pos.min_price) / pos.avg_price * 100
             mae = (pos.max_price - pos.avg_price) / pos.avg_price * 100
+        sl_info = f" SL_step:{pos.sl_step}/{len(MOVE_SL_STEPS)}" if pos.sl_step > 0 else ""
         line = (f"{now} CLOSE {pos.direction} {pos.symbol} @ {_pfmt(exit_price)} | {exit_reason} | "
-                f"PnL {pnl_pct:+.2f}% | DCA:{pos.total_size} | Bars:{pos.bars_held} | "
+                f"PnL {pnl_pct:+.2f}% | DCA:{pos.total_size} | Bars:{pos.bars_held}{sl_info} | "
                 f"MFE:{mfe:+.2f}% MAE:{mae:.2f}% High:{_pfmt(pos.max_price)} Low:{_pfmt(pos.min_price)}\n")
         with open(self._trades_log, "a") as f:
             f.write(line)
