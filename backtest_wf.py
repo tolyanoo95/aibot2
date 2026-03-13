@@ -426,13 +426,14 @@ def simulate_dca_trades(
             dca_timeout = pos.total_size > 1 and bars_held >= 24
 
             closed = False
+            sl_was_moved = hasattr(pos, '_sl_step') and pos._sl_step > 0
             if hit_sl and hit_tp:
                 pos.exit_price = pos.hard_sl
-                pos.exit_reason = "HARD_SL"
+                pos.exit_reason = "SL_MOVED" if sl_was_moved else "HARD_SL"
                 closed = True
             elif hit_sl:
                 pos.exit_price = pos.hard_sl
-                pos.exit_reason = "HARD_SL"
+                pos.exit_reason = "SL_MOVED" if sl_was_moved else "HARD_SL"
                 closed = True
             elif hit_tp:
                 pos.exit_price = pos.tp
