@@ -1001,10 +1001,10 @@ class VolumeBarsBot:
                 exit_price = current_price
 
                 if hit_sl and hit_tp:
-                    exit_reason = "HARD_SL"
+                    exit_reason = "SL_MOVED" if pos.sl_step > 0 else "HARD_SL"
                     exit_price = pos.hard_sl
                 elif hit_sl:
-                    exit_reason = "HARD_SL"
+                    exit_reason = "SL_MOVED" if pos.sl_step > 0 else "HARD_SL"
                     exit_price = pos.hard_sl
                 elif hit_tp:
                     exit_reason = "TP"
