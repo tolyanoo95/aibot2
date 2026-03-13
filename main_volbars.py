@@ -274,14 +274,14 @@ class VolumeBarsBot:
                         tp=p_data["tp"], entry_time=p_data.get("entry_time", 0),
                         bars_held=p_data.get("bars_held", 0),
                         entry_atr=p_data.get("entry_atr", 0),
-                    max_price=p_data.get("max_price", 0),
-                    min_price=p_data.get("min_price", float('inf')),
-                    sl_moved=p_data.get("sl_moved", False),
-                    sl_step=p_data.get("sl_step", 0),
-                    best_price=p_data.get("best_price", p_data.get("max_price", 0)),
-                )
-                self.positions.append(pos)
-            logger.info(f"  Loaded {len(self.positions)} positions, lock={self.global_locked_dir}")
+                        max_price=p_data.get("max_price", 0),
+                        min_price=p_data.get("min_price", float('inf')),
+                        sl_moved=p_data.get("sl_moved", False),
+                        sl_step=p_data.get("sl_step", 0),
+                        best_price=p_data.get("best_price", p_data.get("max_price", 0)),
+                    )
+                    self.positions.append(pos)
+                logger.info(f"  Loaded {len(self.positions)} positions, lock={self.global_locked_dir}")
             except Exception as e:
                 logger.error(f"  State load error: {e}")
 
