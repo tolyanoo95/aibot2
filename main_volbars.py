@@ -1186,12 +1186,7 @@ class VolumeBarsBot:
                                 self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
 
                                 pair_dir_key = f"{pos.symbol}_{pos.direction}"
-                                if pnl_pct < 0:
-                                    self.pair_sl_streaks[pair_dir_key] = self.pair_sl_streaks.get(pair_dir_key, 0) + 1
-                                    if self.pair_sl_streaks[pair_dir_key] >= self.PAIR_COOLDOWN_SL:
-                                        self.pair_dir_cooldowns[pair_dir_key] = pair_vb + self.PAIR_COOLDOWN_BARS
-                                else:
-                                    self.pair_sl_streaks[pair_dir_key] = 0
+                                self.pair_sl_streaks[pair_dir_key] = 0
             except Exception as e:
                 logger.error(f"SL monitor error: {e}")
                 time.sleep(10)

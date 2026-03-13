@@ -481,8 +481,6 @@ def simulate_dca_trades(
             continue
         if conf < threshold:
             continue
-        if len(open_positions) >= max_open:
-            continue
         if cooldowns.get(symbol, 0) > bar_idx:
             continue
         if pair_dir_cooldowns.get((symbol, direction), 0) > bar_idx:
@@ -492,7 +490,7 @@ def simulate_dca_trades(
             ex = existing[0]
             if ex.direction == direction:
                 continue
-            # Flip: close opposite position, then open new
+            # Flip: close opposite position, then open new (allowed even at max_open)
             ex.exit_bar = bar_idx
             ex.exit_price = close[bar_idx]
             ex.exit_reason = "FLIP"
@@ -511,6 +509,8 @@ def simulate_dca_trades(
                     pair_dir_cooldowns[key] = bar_idx + pair_cooldown_bars
             else:
                 sl_streaks[key] = 0
+        elif len(open_positions) >= max_open:
+            continue
 
         a = atr[bar_idx]
         if np.isnan(a) or a <= 0:
