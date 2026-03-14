@@ -79,7 +79,7 @@ MAX_OPEN = 11
 MAX_DCA = 3
 DCA_STEP_MULT = 1.0
 COOLDOWN_BARS = 3
-MOVE_SL_STEPS = [(0.5, 0.0), (1.0, 0.5), (2.0, 1.0)]  # (activate_at, move_to) in ATR
+MOVE_SL_STEPS = [(0.5, 0.05), (1.0, 0.5), (2.0, 1.0)]  # (activate_at, move_to) in ATR; step1=+0.05 covers fees
 MOVE_SL_TRAIL = 1.0   # after all steps: trail SL at this distance from best price (ATR)
 MOVE_SL_CHECK = 15    # check every 15 seconds
 WARMUP_DAYS = 60

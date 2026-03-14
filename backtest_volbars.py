@@ -37,7 +37,7 @@ console = Console()
 ADX_MIN = 20
 LONG_MOM = 0.30
 SHORT_MOM = 0.10
-MOVE_SL_STEPS = [(0.5, 0.0), (1.0, 0.5), (2.0, 1.0)]
+MOVE_SL_STEPS = [(0.5, 0.05), (1.0, 0.5), (2.0, 1.0)]
 MOVE_SL_TRAIL = 1.0
 
 
