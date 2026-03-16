@@ -1147,7 +1147,10 @@ class VolumeBarsBot:
                         triggered = True
                     if triggered:
                         new_sl = pos.avg_price + step_to * ea if pos.direction == "LONG" else pos.avg_price - step_to * ea
-                        pos.hard_sl = new_sl
+                        if pos.direction == "LONG":
+                            pos.hard_sl = max(pos.hard_sl, new_sl)
+                        else:
+                            pos.hard_sl = min(pos.hard_sl, new_sl)
                         pos.sl_step += 1
                         pos.sl_moved = True
                         logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(new_sl)} price={_pfmt(price)} (ws)")

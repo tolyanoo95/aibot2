@@ -315,7 +315,9 @@ def run_backtest(
                         if pos.direction=='LONG' and h-pos.avg_price >= sa*ea: triggered = True
                         elif pos.direction=='SHORT' and pos.avg_price-l >= sa*ea: triggered = True
                         if triggered:
-                            pos.hard_sl = pos.avg_price + st_*ea if pos.direction=='LONG' else pos.avg_price - st_*ea
+                            ns_ = pos.avg_price + st_*ea if pos.direction=='LONG' else pos.avg_price - st_*ea
+                            if pos.direction=='LONG': pos.hard_sl = max(pos.hard_sl, ns_)
+                            else: pos.hard_sl = min(pos.hard_sl, ns_)
                             pos.sl_step += 1
                     elif MOVE_SL_TRAIL > 0:
                         if pos.direction == 'LONG':
