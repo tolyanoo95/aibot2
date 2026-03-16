@@ -81,7 +81,7 @@ DCA_STEP_MULT = 1.0
 COOLDOWN_BARS = 3
 MOVE_SL_STEPS = [(0.25, 0.30), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]  # 4-step: scalp at +0.25, then 0.5→+0.25, 1.0→+0.5, 2.0→+1.0
 MOVE_SL_TRAIL = 1.0   # after all steps: trail SL at this distance from best price (ATR)
-MOVE_SL_CHECK = 15    # check every 15 seconds
+MOVE_SL_CHECK = 5     # check every 5 seconds (132 req/min, limit 2400)
 WARMUP_DAYS = 60
 SCAN_INTERVAL = 900  # 15 minutes
 
