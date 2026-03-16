@@ -971,23 +971,9 @@ class VolumeBarsBot:
                     hit_tp = current_low <= pos.tp
                     hit_sl = current_high >= effective_sl
 
-                # Multi-step Move SL + trail
+                # Trail only (Move SL steps handled by WebSocket _process_price)
                 if ea > 0:
-                    if pos.sl_step < len(MOVE_SL_STEPS):
-                        step_at, step_to = MOVE_SL_STEPS[pos.sl_step]
-                        triggered = False
-                        if pos.direction == "LONG" and current_high - pos.avg_price >= step_at * ea:
-                            triggered = True
-                        elif pos.direction == "SHORT" and pos.avg_price - current_low >= step_at * ea:
-                            triggered = True
-                        if triggered:
-                            new_sl = pos.avg_price + step_to * ea if pos.direction == "LONG" else pos.avg_price - step_to * ea
-                            pos.hard_sl = new_sl
-                            pos.sl_step += 1
-                            pos.sl_moved = True
-                            logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(new_sl)}")
-                            self._log_sl_moved(pos)
-                    elif MOVE_SL_TRAIL > 0:
+                    if pos.sl_step >= len(MOVE_SL_STEPS) and MOVE_SL_TRAIL > 0:
                         if pos.direction == "LONG":
                             pos.best_price = max(pos.best_price, current_high)
                             new_sl = pos.best_price - MOVE_SL_TRAIL * ea
@@ -1147,16 +1133,16 @@ class VolumeBarsBot:
                 if pos.sl_step < len(MOVE_SL_STEPS):
                     step_at, step_to = MOVE_SL_STEPS[pos.sl_step]
                     triggered = False
-                    if pos.direction == "LONG" and pos.max_price - pos.avg_price >= step_at * ea:
+                    if pos.direction == "LONG" and price - pos.avg_price >= step_at * ea:
                         triggered = True
-                    elif pos.direction == "SHORT" and pos.avg_price - pos.min_price >= step_at * ea:
+                    elif pos.direction == "SHORT" and pos.avg_price - price >= step_at * ea:
                         triggered = True
                     if triggered:
                         new_sl = pos.avg_price + step_to * ea if pos.direction == "LONG" else pos.avg_price - step_to * ea
                         pos.hard_sl = new_sl
                         pos.sl_step += 1
                         pos.sl_moved = True
-                        logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(new_sl)} (ws)")
+                        logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(new_sl)} price={_pfmt(price)} (ws)")
                         self._log_sl_moved(pos)
                 elif MOVE_SL_TRAIL > 0:
                     if pos.direction == "LONG":
