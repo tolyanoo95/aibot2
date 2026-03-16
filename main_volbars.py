@@ -880,31 +880,42 @@ class VolumeBarsBot:
                 self._log_dca_entry(pos, price, signal)
 
     def _process_pair(self, symbol: str):
-        """Fully independent pair processing: scan + signal + open + close. Runs in own thread."""
+        """15m scan: ATR refresh + position management. Signal generation moved to WebSocket."""
         try:
-            # 1. Update volume bars (pair-specific data, no lock needed)
-            new_bar = self.update_volume_bars(symbol)
-            if not new_bar:
-                # Still check positions (live SL/TP) but DON'T increment bars_held
-                self._check_pair_positions(symbol, new_bar_closed=False)
-                return
+            # 1. Refresh time data (ATR) from latest 15m candle
+            try:
+                df_new = self.fetcher.fetch_ohlcv(symbol, "15m", limit=2)
+                if not df_new.empty and symbol in self.time_data:
+                    base = self.time_data[symbol][["open", "high", "low", "close", "volume"]]
+                    base = pd.concat([base, df_new.iloc[[-1]]])
+                    base = base[~base.index.duplicated(keep='last')]
+                    self.time_data[symbol] = self.indicators.calculate_all(base.tail(1000))
+                    self.time_data[symbol] = self.time_data[symbol][~self.time_data[symbol].index.duplicated(keep='last')]
 
-            # Track per-pair volume bar count (for cooldowns in vol bar units)
-            self.vol_bar_counts[symbol] = self.vol_bar_counts.get(symbol, 0) + 1
+                    with self._lock:
+                        if symbol in self.vol_bars and symbol in self.time_data:
+                            time_atr = self.time_data[symbol]["atr"].reindex(
+                                self.vol_bars[symbol].index, method="ffill")
+                            self.vol_bars[symbol]["atr"] = time_atr.values
 
-            # 2. Check DCA for existing positions (independent of signal guards, like backtest)
-            self._try_dca(symbol)
+                # Rolling threshold update (every 960 time bars)
+                if not df_new.empty and symbol in self.vol_history:
+                    latest = df_new.iloc[-1]
+                    self.vol_history[symbol].append(float(latest["volume"]))
+                    if len(self.vol_history[symbol]) > 960:
+                        self.vol_history[symbol] = self.vol_history[symbol][-960:]
+                    self.time_bar_counts[symbol] = self.time_bar_counts.get(symbol, 0) + 1
+                    if self.time_bar_counts[symbol] % 960 == 0:
+                        new_threshold = float(np.median(self.vol_history[symbol])) * 2
+                        old_threshold = self.vol_thresholds.get(symbol, 0)
+                        self.vol_thresholds[symbol] = new_threshold
+                        if abs(new_threshold - old_threshold) / max(old_threshold, 1) > 0.05:
+                            logger.info(f"  {symbol} threshold updated: {old_threshold:.0f} → {new_threshold:.0f}")
+            except Exception as e:
+                logger.debug(f"  {symbol} ATR refresh error: {e}")
 
-            # 3. Check signal for NEW positions
-            signal = self.check_signal(symbol)
-
-            if signal:
-                logger.info(f"  SIGNAL: {signal['direction']} {signal['symbol']} @ {_pfmt(signal['price'])} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
-                with self._lock:
-                    self.open_position(signal)
-
-            # 4. Check positions for this pair (new bar = increment bars_held)
-            self._check_pair_positions(symbol, new_bar_closed=True)
+            # 2. Position management (SL/TP/vol_drop/timeout using bar high/low)
+            self._check_pair_positions(symbol, new_bar_closed=False)
 
         except Exception as e:
             logger.error(f"Error processing {symbol}: {e}")
@@ -1176,8 +1187,120 @@ class VolumeBarsBot:
                         pair_dir_key = f"{pos.symbol}_{pos.direction}"
                         self.pair_sl_streaks[pair_dir_key] = 0
 
+    def _process_kline_1m(self, symbol: str, o: float, h: float, l: float, c: float, vol: float, kline_time):
+        """Process a closed 1m kline: accumulate into volume bar, check signal on completion."""
+        if symbol not in self.vol_buffers or symbol not in self.vol_bars:
+            return
+
+        buf = self.vol_buffers[symbol]
+
+        with self._lock:
+            if buf["bar_open"] is None:
+                buf["bar_open"] = o
+                buf["bar_high"] = h
+                buf["bar_low"] = l
+                buf["bar_start"] = kline_time
+
+            buf["bar_high"] = max(buf["bar_high"], h)
+            buf["bar_low"] = min(buf["bar_low"], l)
+            buf["cum_vol"] += vol
+
+            threshold = self.vol_thresholds.get(symbol, 2000)
+
+            if buf["cum_vol"] < threshold:
+                return
+
+            new_bar = pd.DataFrame([{
+                "open": buf["bar_open"],
+                "high": buf["bar_high"],
+                "low": buf["bar_low"],
+                "close": c,
+                "volume": buf["cum_vol"],
+            }], index=[buf["bar_start"]])
+
+            vb_base = self.vol_bars[symbol][["open", "high", "low", "close", "volume"]]
+            vb_base = pd.concat([vb_base, new_bar])
+            vb_base = vb_base[~vb_base.index.duplicated(keep='last')]
+            self.vol_bars[symbol] = self.indicators.calculate_all(vb_base.tail(1000))
+            self.vol_bars[symbol] = self.vol_bars[symbol][~self.vol_bars[symbol].index.duplicated(keep='last')]
+
+            if symbol in self.time_data:
+                time_atr = self.time_data[symbol]["atr"].reindex(
+                    self.vol_bars[symbol].index, method="ffill"
+                )
+                self.vol_bars[symbol]["atr"] = time_atr.values
+
+            if symbol in self.htf_vol_bars:
+                for col in ["ema_9", "ema_21", "ema_50"]:
+                    if col in self.htf_vol_bars[symbol].columns:
+                        self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(
+                            self.vol_bars[symbol].index, method="ffill")
+                import pandas_ta as pta
+                htf_df = self.htf_vol_bars[symbol]
+                if "high" in htf_df.columns and "low" in htf_df.columns:
+                    st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
+                    if st is not None:
+                        for sc in st.columns:
+                            if "SUPERTd" in sc:
+                                self.vol_bars[symbol]["htf_supertrend"] = st[sc].reindex(
+                                    self.vol_bars[symbol].index, method="ffill")
+
+            # HTF volume bar accumulation
+            if symbol in self.htf_vol_bars:
+                htf_threshold = self.vol_thresholds.get(symbol, 2000) * 5
+                if not hasattr(self, '_htf_buffers'):
+                    self._htf_buffers = {}
+                htf_buf = self._htf_buffers.get(symbol, {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None})
+                if htf_buf["bar_open"] is None:
+                    htf_buf["bar_open"] = buf["bar_open"]
+                    htf_buf["bar_high"] = buf["bar_high"]
+                    htf_buf["bar_low"] = buf["bar_low"]
+                    htf_buf["bar_start"] = buf["bar_start"]
+                htf_buf["bar_high"] = max(htf_buf["bar_high"], h)
+                htf_buf["bar_low"] = min(htf_buf["bar_low"], l)
+                htf_buf["cum_vol"] += buf["cum_vol"]
+                if htf_buf["cum_vol"] >= htf_threshold:
+                    htf_bar = pd.DataFrame([{
+                        "open": htf_buf["bar_open"], "high": htf_buf["bar_high"],
+                        "low": htf_buf["bar_low"], "close": c,
+                        "volume": htf_buf["cum_vol"],
+                    }], index=[htf_buf["bar_start"]])
+                    htf_base = self.htf_vol_bars[symbol][["open", "high", "low", "close", "volume"]]
+                    htf_base = pd.concat([htf_base, htf_bar]).tail(200)
+                    htf_base = htf_base[~htf_base.index.duplicated(keep='last')]
+                    self.htf_vol_bars[symbol] = self.indicators.calculate_all(htf_base)
+                    import pandas_ta as pta
+                    htf_df2 = self.htf_vol_bars[symbol]
+                    st2 = pta.supertrend(htf_df2["high"], htf_df2["low"], htf_df2["close"], length=9, multiplier=3.0)
+                    if st2 is not None:
+                        for sc2 in st2.columns:
+                            if "SUPERTd" in sc2:
+                                self.vol_bars[symbol]["htf_supertrend"] = st2[sc2].reindex(self.vol_bars[symbol].index, method="ffill")
+                    htf_buf = {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None}
+                self._htf_buffers[symbol] = htf_buf
+
+            bar_vol = buf["cum_vol"]
+            buf["cum_vol"] = 0
+            buf["bar_open"] = None
+
+        self.vol_bar_counts[symbol] = self.vol_bar_counts.get(symbol, 0) + 1
+        logger.info(f"  RT_BAR {symbol} vol={bar_vol:.0f} threshold={threshold:.0f}")
+
+        self._try_dca(symbol)
+
+        signal = self.check_signal(symbol)
+        if signal:
+            logger.info(f"  RT_SIGNAL: {signal['direction']} {signal['symbol']} @ {_pfmt(signal['price'])} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
+            with self._lock:
+                self.open_position(signal)
+
+        with self._lock:
+            for pos in list(self.positions):
+                if pos.symbol == symbol:
+                    pos.bars_held += 1
+
     def _sl_monitor_ws(self):
-        """WebSocket-based SL monitor: real-time price via Binance miniTicker."""
+        """WebSocket: miniTicker for SL monitoring + kline_1m for real-time volume bars."""
         import json
         try:
             import websocket
@@ -1191,22 +1314,40 @@ class VolumeBarsBot:
         for s in self.pairs:
             raw = s.replace("/", "").lower()
             stream_parts.append(f"{raw}@miniTicker")
+            stream_parts.append(f"{raw}@kline_1m")
             ws_to_pair[s.replace("/", "").upper()] = s
         streams = "/".join(stream_parts)
         url = f"wss://fstream.binance.com/stream?streams={streams}"
 
         def on_message(ws, message):
             try:
-                data = json.loads(message).get("data", {})
-                sym_raw = data.get("s", "")
-                price = float(data.get("c", 0))
-                if not sym_raw or price <= 0:
-                    return
-                symbol = ws_to_pair.get(sym_raw)
-                if symbol:
-                    self._process_price(symbol, price)
+                msg = json.loads(message)
+                stream = msg.get("stream", "")
+                data = msg.get("data", {})
+
+                if "@miniTicker" in stream:
+                    sym_raw = data.get("s", "")
+                    price = float(data.get("c", 0))
+                    if sym_raw and price > 0:
+                        symbol = ws_to_pair.get(sym_raw)
+                        if symbol:
+                            self._process_price(symbol, price)
+
+                elif "@kline_1m" in stream:
+                    k = data.get("k", {})
+                    if not k.get("x", False):
+                        return
+                    sym_raw = k.get("s", "")
+                    symbol = ws_to_pair.get(sym_raw)
+                    if symbol:
+                        kline_time = pd.Timestamp(k["t"], unit="ms")
+                        self._process_kline_1m(
+                            symbol,
+                            float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]),
+                            float(k["v"]), kline_time,
+                        )
             except Exception as e:
-                logger.debug(f"WS message parse error: {e}")
+                logger.debug(f"WS parse error: {e}")
 
         def on_error(ws, error):
             logger.warning(f"WS error: {error}")
@@ -1215,7 +1356,7 @@ class VolumeBarsBot:
             logger.warning(f"WS closed: {close_status} {close_msg}")
 
         def on_open(ws):
-            logger.info(f"WS connected: {len(self.pairs)} pairs real-time")
+            logger.info(f"WS connected: {len(self.pairs)} pairs (miniTicker + kline_1m)")
 
         while True:
             try:
@@ -1294,9 +1435,9 @@ class VolumeBarsBot:
             return
 
         import threading
-        sl_thread = threading.Thread(target=self._sl_monitor_ws, daemon=True)
-        sl_thread.start()
-        logger.info(f"SL monitor started (WebSocket real-time, {len(MOVE_SL_STEPS)}-step + trail {MOVE_SL_TRAIL}x ATR)")
+        ws_thread = threading.Thread(target=self._sl_monitor_ws, daemon=True)
+        ws_thread.start()
+        logger.info(f"WebSocket started (miniTicker + kline_1m, {len(MOVE_SL_STEPS)}-step Move SL + trail {MOVE_SL_TRAIL}x ATR)")
 
         logger.info(f"Starting scan loop (aligned to 15m bar close)...")
         while True:
