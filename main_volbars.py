@@ -1114,8 +1114,123 @@ class VolumeBarsBot:
         # Save state to disk after every scan
         self._save_state()
 
-    def _sl_monitor(self):
-        """Daemon thread: check move SL activation + SL hit every 15s."""
+    def _process_price(self, symbol: str, price: float):
+        """Process a price tick for Move SL logic (called from WebSocket or polling)."""
+        with self._lock:
+            active = [p for p in self.positions if p.symbol == symbol]
+        if not active:
+            return
+
+        for pos in active:
+            ea = pos.entry_atr if pos.entry_atr > 0 else 0
+            if ea <= 0:
+                continue
+
+            with self._lock:
+                if pos not in self.positions:
+                    continue
+
+                pos.max_price = max(pos.max_price, price)
+                pos.min_price = min(pos.min_price, price)
+
+                if pos.sl_step < len(MOVE_SL_STEPS):
+                    step_at, step_to = MOVE_SL_STEPS[pos.sl_step]
+                    triggered = False
+                    if pos.direction == "LONG" and pos.max_price - pos.avg_price >= step_at * ea:
+                        triggered = True
+                    elif pos.direction == "SHORT" and pos.avg_price - pos.min_price >= step_at * ea:
+                        triggered = True
+                    if triggered:
+                        new_sl = pos.avg_price + step_to * ea if pos.direction == "LONG" else pos.avg_price - step_to * ea
+                        pos.hard_sl = new_sl
+                        pos.sl_step += 1
+                        pos.sl_moved = True
+                        logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(new_sl)} (ws)")
+                        self._log_sl_moved(pos)
+                elif MOVE_SL_TRAIL > 0:
+                    if pos.direction == "LONG":
+                        pos.best_price = max(pos.best_price, price)
+                        new_sl = pos.best_price - MOVE_SL_TRAIL * ea
+                    else:
+                        pos.best_price = min(pos.best_price, price)
+                        new_sl = pos.best_price + MOVE_SL_TRAIL * ea
+                    if (pos.direction == "LONG" and new_sl > pos.hard_sl) or \
+                       (pos.direction == "SHORT" and new_sl < pos.hard_sl):
+                        pos.hard_sl = new_sl
+
+                if pos.sl_moved:
+                    sl_hit = False
+                    if pos.direction == "LONG" and price <= pos.hard_sl:
+                        pnl_pct = (price - pos.avg_price) / pos.avg_price * 100 * pos.total_size
+                        sl_hit = True
+                    elif pos.direction == "SHORT" and price >= pos.hard_sl:
+                        pnl_pct = (pos.avg_price - price) / pos.avg_price * 100 * pos.total_size
+                        sl_hit = True
+
+                    if sl_hit:
+                        logger.info(f"  SL_HIT {pos.direction} {pos.symbol} @ {_pfmt(price)} | PnL {pnl_pct:+.2f}% (ws)")
+                        self._log_trade_close(pos, price, "SL_MOVED", pnl_pct)
+                        self.positions.remove(pos)
+                        pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
+                        self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
+                        pair_dir_key = f"{pos.symbol}_{pos.direction}"
+                        self.pair_sl_streaks[pair_dir_key] = 0
+
+    def _sl_monitor_ws(self):
+        """WebSocket-based SL monitor: real-time price via Binance miniTicker."""
+        import json
+        try:
+            import websocket
+        except ImportError:
+            logger.warning("websocket-client not installed, falling back to polling")
+            self._sl_monitor_poll()
+            return
+
+        ws_to_pair = {}
+        stream_parts = []
+        for s in self.pairs:
+            raw = s.replace("/", "").lower()
+            stream_parts.append(f"{raw}@miniTicker")
+            ws_to_pair[s.replace("/", "").upper()] = s
+        streams = "/".join(stream_parts)
+        url = f"wss://fstream.binance.com/stream?streams={streams}"
+
+        def on_message(ws, message):
+            try:
+                data = json.loads(message).get("data", {})
+                sym_raw = data.get("s", "")
+                price = float(data.get("c", 0))
+                if not sym_raw or price <= 0:
+                    return
+                symbol = ws_to_pair.get(sym_raw)
+                if symbol:
+                    self._process_price(symbol, price)
+            except Exception as e:
+                logger.debug(f"WS message parse error: {e}")
+
+        def on_error(ws, error):
+            logger.warning(f"WS error: {error}")
+
+        def on_close(ws, close_status, close_msg):
+            logger.warning(f"WS closed: {close_status} {close_msg}")
+
+        def on_open(ws):
+            logger.info(f"WS connected: {len(self.pairs)} pairs real-time")
+
+        while True:
+            try:
+                ws = websocket.WebSocketApp(
+                    url, on_message=on_message, on_error=on_error,
+                    on_close=on_close, on_open=on_open,
+                )
+                ws.run_forever(ping_interval=30, ping_timeout=10)
+            except Exception as e:
+                logger.error(f"WS fatal: {e}")
+            logger.info("WS reconnecting in 5s...")
+            time.sleep(5)
+
+    def _sl_monitor_poll(self):
+        """Fallback polling SL monitor if WebSocket unavailable."""
         from concurrent.futures import ThreadPoolExecutor
         while True:
             try:
@@ -1141,67 +1256,10 @@ class VolumeBarsBot:
 
                 for pos in active_positions:
                     price = prices.get(pos.symbol)
-                    if price is None:
-                        continue
-
-                    ea = pos.entry_atr if pos.entry_atr > 0 else 0
-                    if ea <= 0:
-                        continue
-
-                    with self._lock:
-                        if pos not in self.positions:
-                            continue
-
-                        pos.max_price = max(pos.max_price, price)
-                        pos.min_price = min(pos.min_price, price)
-
-                        # Multi-step Move SL + trail (60s check)
-                        if pos.sl_step < len(MOVE_SL_STEPS):
-                            step_at, step_to = MOVE_SL_STEPS[pos.sl_step]
-                            triggered = False
-                            if pos.direction == "LONG" and pos.max_price - pos.avg_price >= step_at * ea:
-                                triggered = True
-                            elif pos.direction == "SHORT" and pos.avg_price - pos.min_price >= step_at * ea:
-                                triggered = True
-                            if triggered:
-                                new_sl = pos.avg_price + step_to * ea if pos.direction == "LONG" else pos.avg_price - step_to * ea
-                                pos.hard_sl = new_sl
-                                pos.sl_step += 1
-                                pos.sl_moved = True
-                                logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(new_sl)} (60s check)")
-                                self._log_sl_moved(pos)
-                        elif MOVE_SL_TRAIL > 0:
-                            if pos.direction == "LONG":
-                                pos.best_price = max(pos.best_price, price)
-                                new_sl = pos.best_price - MOVE_SL_TRAIL * ea
-                            else:
-                                pos.best_price = min(pos.best_price, price)
-                                new_sl = pos.best_price + MOVE_SL_TRAIL * ea
-                            if (pos.direction == "LONG" and new_sl > pos.hard_sl) or \
-                               (pos.direction == "SHORT" and new_sl < pos.hard_sl):
-                                pos.hard_sl = new_sl
-
-                        # Check if moved SL is hit
-                        if pos.sl_moved:
-                            sl_hit = False
-                            if pos.direction == "LONG" and price <= pos.hard_sl:
-                                pnl_pct = (pos.hard_sl - pos.avg_price) / pos.avg_price * 100 * pos.total_size
-                                sl_hit = True
-                            elif pos.direction == "SHORT" and price >= pos.hard_sl:
-                                pnl_pct = (pos.avg_price - pos.hard_sl) / pos.avg_price * 100 * pos.total_size
-                                sl_hit = True
-
-                            if sl_hit:
-                                logger.info(f"  SL_HIT {pos.direction} {pos.symbol} @ {_pfmt(pos.hard_sl)} | PnL {pnl_pct:+.2f}% (60s check)")
-                                self._log_trade_close(pos, pos.hard_sl, "SL_MOVED", pnl_pct)
-                                self.positions.remove(pos)
-                                pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
-                                self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
-
-                                pair_dir_key = f"{pos.symbol}_{pos.direction}"
-                                self.pair_sl_streaks[pair_dir_key] = 0
+                    if price is not None:
+                        self._process_price(pos.symbol, price)
             except Exception as e:
-                logger.error(f"SL monitor error: {e}")
+                logger.error(f"SL poll error: {e}")
                 time.sleep(10)
 
     @staticmethod
@@ -1235,11 +1293,10 @@ class VolumeBarsBot:
             self.scan()
             return
 
-        # Start SL monitor thread (checks move SL + SL hit every 60s)
         import threading
-        sl_thread = threading.Thread(target=self._sl_monitor, daemon=True)
+        sl_thread = threading.Thread(target=self._sl_monitor_ws, daemon=True)
         sl_thread.start()
-        logger.info(f"SL monitor started (check every {MOVE_SL_CHECK}s, {len(MOVE_SL_STEPS)}-step + trail {MOVE_SL_TRAIL}x ATR)")
+        logger.info(f"SL monitor started (WebSocket real-time, {len(MOVE_SL_STEPS)}-step + trail {MOVE_SL_TRAIL}x ATR)")
 
         logger.info(f"Starting scan loop (aligned to 15m bar close)...")
         while True:
