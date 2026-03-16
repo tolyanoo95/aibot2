@@ -422,12 +422,24 @@ def simulate_dca_trades(
                         if new_sl < pos.hard_sl:
                             pos.hard_sl = new_sl
 
+            # Realistic: if Move SL put SL above current price → close at bar close
+            _imm_close = False
+            if move_sl_at > 0 and hasattr(pos, '_sl_step') and pos._sl_step > 0:
+                if pos.direction == "LONG" and pos.hard_sl > close[bar_idx]:
+                    _imm_close = True
+                elif pos.direction == "SHORT" and pos.hard_sl < close[bar_idx]:
+                    _imm_close = True
+
             # Fix 4: DCA timeout — close DCA positions after 24 bars
             dca_timeout = pos.total_size > 1 and bars_held >= 24
 
             closed = False
             sl_was_moved = hasattr(pos, '_sl_step') and pos._sl_step > 0
-            if hit_sl and hit_tp:
+            if _imm_close:
+                pos.exit_price = close[bar_idx]
+                pos.exit_reason = "SL_MOVED"
+                closed = True
+            elif hit_sl and hit_tp:
                 pos.exit_price = pos.hard_sl
                 pos.exit_reason = "SL_MOVED" if sl_was_moved else "HARD_SL"
                 closed = True
