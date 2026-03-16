@@ -28,7 +28,7 @@ CACHE_FILE = "data/ohlcv_cache_15m.pkl"
 ADX_MIN = 20
 LONG_MOM = 0.30
 SHORT_MOM = 0.10
-MOVE_SL_STEPS = [(0.15, 0.20), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]
+MOVE_SL_STEPS = [(0.15, 0.50), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]
 MOVE_SL_TRAIL = 1.0
 
 
