@@ -82,6 +82,8 @@ COOLDOWN_BARS = 3
 MOVE_SL_STEPS = [(0.25, 0.30), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]  # 4-step: scalp at +0.25, then 0.5→+0.25, 1.0→+0.5, 2.0→+1.0
 MOVE_SL_TRAIL = 1.0   # after all steps: trail SL at this distance from best price (ATR)
 MOVE_SL_CHECK = 5     # check every 5 seconds (132 req/min, limit 2400)
+MAKER_FEE = 0.0002    # 0.02% maker (limit orders)
+TAKER_FEE = 0.0005    # 0.05% taker (market orders)
 WARMUP_DAYS = 60
 SCAN_INTERVAL = 900  # 15 minutes
 
@@ -765,6 +767,10 @@ class VolumeBarsBot:
 
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+        # Fee: maker for entry (limit), taker for exit (market) per DCA entry
+        fee_pct = (MAKER_FEE + TAKER_FEE) * 100 * pos.total_size  # % of position
+        net_pnl_pct = pnl_pct - fee_pct
+
         # trades.log
         if pos.direction == "LONG":
             mfe = (pos.max_price - pos.avg_price) / pos.avg_price * 100
@@ -774,7 +780,7 @@ class VolumeBarsBot:
             mae = (pos.max_price - pos.avg_price) / pos.avg_price * 100
         sl_info = f" SL_step:{pos.sl_step}/{len(MOVE_SL_STEPS)}" if pos.sl_step > 0 else ""
         line = (f"{now} CLOSE {pos.direction} {pos.symbol} @ {_pfmt(exit_price)} | {exit_reason} | "
-                f"PnL {pnl_pct:+.2f}% | DCA:{pos.total_size} | Bars:{pos.bars_held}{sl_info} | "
+                f"PnL {net_pnl_pct:+.2f}% (gross {pnl_pct:+.2f}% fee -{fee_pct:.2f}%) | DCA:{pos.total_size} | Bars:{pos.bars_held}{sl_info} | "
                 f"MFE:{mfe:+.2f}% MAE:{mae:.2f}% High:{_pfmt(pos.max_price)} Low:{_pfmt(pos.min_price)}\n")
         with open(self._trades_log, "a") as f:
             f.write(line)
@@ -792,7 +798,9 @@ class VolumeBarsBot:
                 t["status"] = "CLOSED"
                 t["avg_price"] = _prnd(pos.avg_price)
                 t["exit_price"] = _prnd(exit_price)
-                t["pnl_pct"] = round(pnl_pct, 2)
+                t["pnl_pct"] = round(net_pnl_pct, 2)
+                t["gross_pnl_pct"] = round(pnl_pct, 2)
+                t["fee_pct"] = round(fee_pct, 2)
                 t["exit_reason"] = exit_reason
                 t["dca_count"] = pos.total_size
                 t["bars_held"] = pos.bars_held
