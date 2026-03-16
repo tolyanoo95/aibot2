@@ -509,43 +509,56 @@ class VolumeBarsBot:
             logger.debug(f"  {symbol}: roc={roc_12:+.2f}% (weak) ADX={adx_raw:.0f}")
             return None
 
-        # HTF Supertrend trend filter (+11.2% vs EMA, stable across 2023-2025)
+        # Compute all guard values upfront for logging
         htf_st = float(vdf["htf_supertrend"].iloc[j]) if "htf_supertrend" in vdf.columns else 0
-        if not np.isnan(htf_st) and htf_st != 0:
-            if direction == "LONG" and htf_st < 0:
-                logger.debug(f"  {symbol}: {direction} blocked by HTF Supertrend (downtrend) roc={roc_12:+.2f}%")
-                return None
-            if direction == "SHORT" and htf_st > 0:
-                logger.debug(f"  {symbol}: {direction} blocked by HTF Supertrend (uptrend) roc={roc_12:+.2f}%")
-                return None
-
-        # ATR expansion filter
         atr = vdf["atr"].values
         atr_ma20 = pd.Series(atr).rolling(20, min_periods=1).mean().values
         atr_exp = atr[j] / atr_ma20[j] if atr_ma20[j] > 0 else 1.0
+        adx = adx_raw
+        rsi_s6 = rsi_s6_raw
+        bar_close_price = float(vdf["close"].iloc[j])
+        atr_val = float(atr[j])
+
+        def _log_blocked(guard_name):
+            """Log blocked signal to trades.log for analysis."""
+            from datetime import datetime
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            line = (f"{now} BLOCKED {direction} {symbol} @ {_pfmt(bar_close_price)} | {guard_name} | "
+                    f"roc={roc_12:+.2f}% ADX={adx:.0f} RSI_s={rsi_s6:+.1f} ATR_EXP={atr_exp:.2f} "
+                    f"HTF={'UP' if htf_st > 0 else 'DN' if htf_st < 0 else '?'} ATR={atr_val:.6f}\n")
+            with open(self._trades_log, "a") as f:
+                f.write(line)
+
+        # HTF Supertrend trend filter
+        if not np.isnan(htf_st) and htf_st != 0:
+            if direction == "LONG" and htf_st < 0:
+                _log_blocked("HTF_DN")
+                return None
+            if direction == "SHORT" and htf_st > 0:
+                _log_blocked("HTF_UP")
+                return None
+
+        # ATR expansion filter
         if np.isnan(atr_exp) or atr_exp > ATR_EXP_MAX:
-            logger.debug(f"  {symbol}: {direction} blocked by ATR_EXP={atr_exp:.2f} roc={roc_12:+.2f}%")
+            _log_blocked(f"ATR_EXP={atr_exp:.2f}")
             return None
 
         # ADX guard
-        adx = adx_raw
         if np.isnan(adx) or adx < ADX_MIN:
-            logger.debug(f"  {symbol}: {direction} blocked by ADX={adx:.0f} roc={roc_12:+.2f}%")
+            _log_blocked(f"ADX={adx:.0f}")
             return None
 
         # RSI slope guard
-        rsi_s6 = rsi_s6_raw
         if np.isnan(rsi_s6):
-            logger.debug(f"  {symbol}: {direction} blocked by RSI=NaN roc={roc_12:+.2f}%")
+            _log_blocked("RSI=NaN")
             return None
         if direction == "LONG" and rsi_s6 < 0:
-            logger.debug(f"  {symbol}: {direction} blocked by RSI_slope={rsi_s6:.1f} roc={roc_12:+.2f}%")
+            _log_blocked(f"RSI_slope={rsi_s6:.1f}")
             return None
         if direction == "SHORT" and rsi_s6 > 0:
-            logger.debug(f"  {symbol}: {direction} blocked by RSI_slope={rsi_s6:+.1f} roc={roc_12:+.2f}%")
+            _log_blocked(f"RSI_slope={rsi_s6:+.1f}")
             return None
 
-        bar_close_price = float(vdf["close"].iloc[j])
         atr_val = float(atr[j])
         if np.isnan(atr_val) or atr_val <= 0:
             return None
