@@ -112,11 +112,17 @@ def run_backtest(
     sl_mult: float = 2.0,
     tp_mult: float = 4.0,
     use_cache: bool = True,
+    max_open: int = 11,
+    no_guards: bool = False,
+    rank_by: str = "alphabetical",
 ):
-    console.print(f"\n[bold cyan]Volume Bars Backtest (matches live bot)[/bold cyan]")
-    console.print(f"HTF: Supertrend(9, 3.0) | ADX>{ADX_MIN} | No global lock")
-    console.print(f"Move SL: {len(MOVE_SL_STEPS)}-step {MOVE_SL_STEPS} + trail {MOVE_SL_TRAIL}x ATR")
-    console.print(f"SL={sl_mult}x TP={tp_mult}x | DCA=3 | Days: {total_days}\n")
+    global_mode = max_open < 11
+    guards_label = "No guards" if no_guards else f"ADX>{ADX_MIN}+RSI+ATR_EXP"
+    console.print(f"\n[bold cyan]Volume Bars Backtest[/bold cyan]")
+    console.print(f"HTF: Supertrend(9, 3.0) | {guards_label}")
+    console.print(f"Move SL: {len(MOVE_SL_STEPS)}-step + trail {MOVE_SL_TRAIL}x ATR")
+    console.print(f"SL={sl_mult}x TP={tp_mult}x | DCA=3 | MAX_OPEN={max_open} | Rank={rank_by}")
+    console.print(f"Mode: {'Global multi-pair' if global_mode else 'Per-pair'} | Days: {total_days}\n")
 
     indicators = TechnicalIndicators()
     import pandas_ta as pta
@@ -183,69 +189,209 @@ def run_backtest(
     min_len = min(len(df) for df in all_pair_data.values())
     fold_results = []
 
-    while start + train_bars + test_bars <= min_len:
-        fold += 1
-        train_end = start + train_bars
-        test_end = train_end + test_bars
-        fold_trades = []
+    # Pre-compute ATR arrays for global mode
+    pair_atr = {sym: df["atr"].values for sym, df in all_pair_data.items()}
+    pair_atr_ma = {sym: pd.Series(df["atr"].values).rolling(20, min_periods=1).mean().values
+                   for sym, df in all_pair_data.items()}
 
-        for symbol, df_full in all_pair_data.items():
-            if len(df_full) < test_end:
-                continue
-            df_test = df_full.iloc[train_end:test_end]
-            if len(df_test) < 20:
-                continue
+    def generate_signal(df_test, j, symbol):
+        roc = float(df_test["roc_12"].iloc[j]) if "roc_12" in df_test.columns else 0
+        if roc > LONG_MOM: direction = "LONG"
+        elif roc < -SHORT_MOM: direction = "SHORT"
+        else: return None
 
+        htf_st = float(df_test["htf_supertrend"].iloc[j]) if "htf_supertrend" in df_test.columns else 0
+        if not np.isnan(htf_st) and htf_st != 0:
+            if direction == "LONG" and htf_st < 0: return None
+            if direction == "SHORT" and htf_st > 0: return None
+
+        if not no_guards:
             atr_test = df_test["atr"].values
             atr_ma20 = pd.Series(atr_test).rolling(20, min_periods=1).mean().values
+            atr_exp = atr_test[j] / atr_ma20[j] if atr_ma20[j] > 0 else 1.0
+            if atr_exp > 1.5: return None
+            adx = float(df_test["ADX_14"].iloc[j]) if "ADX_14" in df_test.columns else 25
+            if adx < ADX_MIN: return None
+            rsi_s6 = float(df_test["rsi"].diff(6).iloc[j]) if "rsi" in df_test.columns else 0
+            if direction == "LONG" and rsi_s6 < 0: return None
+            if direction == "SHORT" and rsi_s6 > 0: return None
 
-            signals = []
-            for j in range(len(df_test)):
-                roc = float(df_test["roc_12"].iloc[j]) if "roc_12" in df_test.columns else 0
-                if roc > LONG_MOM:
-                    direction = "LONG"
-                elif roc < -SHORT_MOM:
-                    direction = "SHORT"
-                else:
-                    continue
+        adx_val = float(df_test["ADX_14"].iloc[j]) if "ADX_14" in df_test.columns else 25
+        return {"bar_idx": j, "symbol": symbol, "direction": direction, "confidence": 0.90,
+                "roc": abs(roc), "adx": adx_val}
 
-                htf_st = float(df_test["htf_supertrend"].iloc[j]) if "htf_supertrend" in df_test.columns else 0
-                if not np.isnan(htf_st) and htf_st != 0:
-                    if direction == "LONG" and htf_st < 0: continue
-                    if direction == "SHORT" and htf_st > 0: continue
+    if not global_mode:
+        # Per-pair mode (original)
+        while start + train_bars + test_bars <= min_len:
+            fold += 1
+            train_end = start + train_bars
+            test_end = train_end + test_bars
+            fold_trades = []
+            for symbol, df_full in all_pair_data.items():
+                if len(df_full) < test_end: continue
+                df_test = df_full.iloc[train_end:test_end]
+                if len(df_test) < 20: continue
+                signals = []
+                for j in range(len(df_test)):
+                    sig = generate_signal(df_test, j, symbol)
+                    if sig: signals.append(sig)
+                trades = simulate_dca_trades(
+                    df_test, signals, tp_mult=tp_mult, dca_step_mult=1.0,
+                    max_entries=3, hard_sl_mult=sl_mult, max_hold=24,
+                    max_open=11, cooldown=3, threshold=0.10, full_size_dca=True,
+                    move_sl_at=MOVE_SL_STEPS[0][0], move_sl_to=MOVE_SL_STEPS[0][1],
+                    move_sl_steps=MOVE_SL_STEPS, move_sl_trail=MOVE_SL_TRAIL,
+                )
+                fold_trades.extend(trades)
+            if fold_trades:
+                pnl_f = sum(t.pnl_pct for t in fold_trades)
+                wr_f = sum(1 for t in fold_trades if t.pnl_pct > 0) / len(fold_trades) * 100
+                ts = list(all_pair_data.values())[0].index[train_end]
+                te_dt = list(all_pair_data.values())[0].index[min(test_end-1, len(list(all_pair_data.values())[0])-1)]
+                fold_results.append({"fold": fold, "trades": len(fold_trades), "wr": wr_f, "pnl": pnl_f,
+                                     "start": str(ts)[:10], "end": str(te_dt)[:10]})
+            all_trades.extend(fold_trades)
+            start += test_bars
+    else:
+        # Global multi-pair mode (bar-by-bar, all pairs together)
+        from dataclasses import dataclass, field as dc_field
+        @dataclass
+        class GPos:
+            symbol: str; direction: str; entry_price: float; avg_price: float
+            hard_sl: float; tp: float; entry_atr: float
+            entries: list = dc_field(default_factory=list); total_size: int = 1
+            bars_held: int = 0; sl_step: int = 0; best_price: float = 0.0
+            pnl_pct: float = 0.0; exit_reason: str = ""
 
-                atr_exp = atr_test[j] / atr_ma20[j] if atr_ma20[j] > 0 else 1.0
-                if atr_exp > 1.5: continue
+        while start + train_bars + test_bars <= min_len:
+            fold += 1
+            train_end = start + train_bars
+            test_end = train_end + test_bars
+            slices = {sym: df.iloc[train_end:test_end] for sym, df in all_pair_data.items() if len(df) >= test_end}
+            positions = []
+            cooldowns = {}; pair_sl_streaks = {}; pair_dir_cooldowns = {}
+            fold_trades = []
 
-                adx = float(df_test["ADX_14"].iloc[j]) if "ADX_14" in df_test.columns else 25
-                if adx < ADX_MIN: continue
+            for j in range(test_bars):
+                # 1. Exits
+                for pos in list(positions):
+                    dt = slices.get(pos.symbol)
+                    if dt is None or j >= len(dt): continue
+                    bi = train_end + j; pos.bars_held += 1
+                    ea = pos.entry_atr; at = pair_atr[pos.symbol]; am = pair_atr_ma[pos.symbol]
+                    cur_atr = at[bi] if bi < len(at) and not np.isnan(at[bi]) else ea
+                    atr_exp = cur_atr / am[bi] if bi < len(am) and am[bi] > 0 else 1.0
+                    vol_scale = max(1.0, atr_exp)
+                    h = float(dt['high'].iloc[j]); l = float(dt['low'].iloc[j]); c = float(dt['close'].iloc[j])
+                    roc_v = float(dt['roc_12'].iloc[j]) if 'roc_12' in dt.columns else 0
+                    adx_v = float(dt['ADX_14'].iloc[j]) if 'ADX_14' in dt.columns else 25
+                    dyn_max = 3 if adx_v >= 30 else (2 if adx_v >= 20 else 1)
+                    if pos.total_size < min(3, dyn_max):
+                        roc_ok = (pos.direction=='LONG' and roc_v>=0) or (pos.direction=='SHORT' and roc_v<=0)
+                        eff_step = 1.0 * vol_scale
+                        if pos.direction == 'LONG':
+                            add_lvl = pos.entries[0] - pos.total_size * eff_step * ea
+                            if l <= add_lvl and roc_ok:
+                                pos.total_size += 1; pos.entries.append(add_lvl)
+                                pos.avg_price = sum(pos.entries)/pos.total_size; pos.tp = pos.avg_price + tp_mult*ea
+                        else:
+                            add_lvl = pos.entries[0] + pos.total_size * eff_step * ea
+                            if h >= add_lvl and roc_ok:
+                                pos.total_size += 1; pos.entries.append(add_lvl)
+                                pos.avg_price = sum(pos.entries)/pos.total_size; pos.tp = pos.avg_price - tp_mult*ea
+                    vol_drop = False
+                    if pos.bars_held >= 3 and j >= 2:
+                        vv = dt['volume'].values; vm = pd.Series(vv).rolling(20,min_periods=1).mean().values
+                        if vm[j] > 0 and vv[j-2:j+1].mean() < vm[j]*0.5: vol_drop = True
+                    eff_sl_dist = sl_mult * vol_scale * ea
+                    if pos.direction == 'LONG':
+                        dyn_sl = pos.entries[0]-eff_sl_dist; eff_sl = min(pos.hard_sl, dyn_sl)
+                        hit_tp = h >= pos.tp; hit_sl = l <= eff_sl
+                    else:
+                        dyn_sl = pos.entries[0]+eff_sl_dist; eff_sl = max(pos.hard_sl, dyn_sl)
+                        hit_tp = l <= pos.tp; hit_sl = h >= eff_sl
+                    if pos.sl_step < len(MOVE_SL_STEPS):
+                        sa, st_ = MOVE_SL_STEPS[pos.sl_step]; triggered = False
+                        if pos.direction=='LONG' and h-pos.avg_price >= sa*ea: triggered = True
+                        elif pos.direction=='SHORT' and pos.avg_price-l >= sa*ea: triggered = True
+                        if triggered:
+                            pos.hard_sl = pos.avg_price + st_*ea if pos.direction=='LONG' else pos.avg_price - st_*ea
+                            pos.sl_step += 1
+                    elif MOVE_SL_TRAIL > 0:
+                        if pos.direction == 'LONG':
+                            pos.best_price = max(pos.best_price, h)
+                            ns = pos.best_price - MOVE_SL_TRAIL*ea
+                            if ns > pos.hard_sl: pos.hard_sl = ns
+                        else:
+                            pos.best_price = min(pos.best_price, l)
+                            ns = pos.best_price + MOVE_SL_TRAIL*ea
+                            if ns < pos.hard_sl: pos.hard_sl = ns
+                    exit_reason = None; exit_price = c; sl_moved = pos.sl_step > 0
+                    if hit_sl and hit_tp: exit_reason = 'SL_MOVED' if sl_moved else 'HARD_SL'; exit_price = pos.hard_sl
+                    elif hit_sl: exit_reason = 'SL_MOVED' if sl_moved else 'HARD_SL'; exit_price = pos.hard_sl
+                    elif hit_tp: exit_reason = 'TP'; exit_price = pos.tp
+                    elif vol_drop: exit_reason = 'VOL_DROP'
+                    elif pos.bars_held >= 24: exit_reason = 'TIMEOUT'
+                    if exit_reason:
+                        pnl_v = ((exit_price-pos.avg_price)/pos.avg_price*100*pos.total_size if pos.direction=='LONG'
+                                 else (pos.avg_price-exit_price)/pos.avg_price*100*pos.total_size)
+                        pos.pnl_pct = pnl_v; pos.exit_reason = exit_reason
+                        fold_trades.append(pos); positions.remove(pos)
+                        pk = f'{pos.symbol}_{pos.direction}'
+                        if exit_reason == 'HARD_SL':
+                            pair_sl_streaks[pk] = pair_sl_streaks.get(pk,0)+1
+                            if pair_sl_streaks[pk] >= 2: pair_dir_cooldowns[pk] = j+8
+                        else: pair_sl_streaks[pk] = 0
+                        cooldowns[pos.symbol] = j+3
 
-                rsi_s6 = float(df_test["rsi"].diff(6).iloc[j]) if "rsi" in df_test.columns else 0
-                if direction == "LONG" and rsi_s6 < 0: continue
-                if direction == "SHORT" and rsi_s6 > 0: continue
+                # 2. Generate, rank, open
+                candidates = []
+                for sym, dt in slices.items():
+                    if j >= len(dt): continue
+                    sig = generate_signal(dt, j, sym)
+                    if not sig: continue
+                    if cooldowns.get(sym,0) > j: continue
+                    pk = f'{sym}_{sig["direction"]}'
+                    if pair_dir_cooldowns.get(pk,0) > j: continue
+                    bi = train_end + j; a = pair_atr[sym][bi] if bi < len(pair_atr[sym]) else 1
+                    if np.isnan(a) or a <= 0: continue
+                    sig['atr_val'] = a; sig['price'] = float(dt['close'].iloc[j])
+                    candidates.append(sig)
 
-                signals.append({"bar_idx": j, "symbol": symbol, "direction": direction, "confidence": 0.90})
+                if rank_by == 'roc': candidates.sort(key=lambda x: -x['roc'])
+                elif rank_by == 'adx': candidates.sort(key=lambda x: -x['adx'])
+                elif rank_by == 'roc_adx': candidates.sort(key=lambda x: -(x['roc']*x['adx']))
 
-            trades = simulate_dca_trades(
-                df_test, signals, tp_mult=tp_mult, dca_step_mult=1.0,
-                max_entries=3, hard_sl_mult=sl_mult, max_hold=24,
-                max_open=11, cooldown=3, threshold=0.10, full_size_dca=True,
-                move_sl_at=MOVE_SL_STEPS[0][0], move_sl_to=MOVE_SL_STEPS[0][1],
-                move_sl_steps=MOVE_SL_STEPS, move_sl_trail=MOVE_SL_TRAIL,
-            )
-            fold_trades.extend(trades)
+                for sig in candidates:
+                    sym = sig['symbol']; d = sig['direction']; price = sig['price']; a = sig['atr_val']
+                    existing = [p for p in positions if p.symbol == sym]
+                    if existing:
+                        ex = existing[0]
+                        if ex.direction == d: continue
+                        fp = price
+                        fpnl = ((fp-ex.avg_price)/ex.avg_price*100*ex.total_size if ex.direction=='LONG'
+                                else (ex.avg_price-fp)/ex.avg_price*100*ex.total_size)
+                        ex.pnl_pct = fpnl; ex.exit_reason = 'FLIP'
+                        fold_trades.append(ex); positions.remove(ex)
+                        epk = f'{ex.symbol}_{ex.direction}'
+                        if fpnl < 0:
+                            pair_sl_streaks[epk] = pair_sl_streaks.get(epk,0)+1
+                            if pair_sl_streaks[epk] >= 2: pair_dir_cooldowns[epk] = j+8
+                        else: pair_sl_streaks[epk] = 0
+                        cooldowns[sym] = j+3
+                    elif len(positions) >= max_open: continue
+                    if d == 'LONG': hard_sl = price-sl_mult*a; tp = price+tp_mult*a
+                    else: hard_sl = price+sl_mult*a; tp = price-tp_mult*a
+                    positions.append(GPos(symbol=sym,direction=d,entry_price=price,avg_price=price,
+                                         hard_sl=hard_sl,tp=tp,entry_atr=a,entries=[price],best_price=price))
 
-        if fold_trades:
-            pnl = sum(t.pnl_pct for t in fold_trades)
-            wins = sum(1 for t in fold_trades if t.pnl_pct > 0)
-            wr = wins / len(fold_trades) * 100
-            test_start = list(all_pair_data.values())[0].index[train_end]
-            test_end_dt = list(all_pair_data.values())[0].index[min(test_end - 1, len(list(all_pair_data.values())[0]) - 1)]
-            fold_results.append({"fold": fold, "trades": len(fold_trades), "wr": wr, "pnl": pnl,
-                                 "start": str(test_start)[:10], "end": str(test_end_dt)[:10]})
-
-        all_trades.extend(fold_trades)
-        start += test_bars
+            if fold_trades:
+                pnl_f = sum(t.pnl_pct for t in fold_trades)
+                wr_f = sum(1 for t in fold_trades if t.pnl_pct > 0) / len(fold_trades) * 100
+                fold_results.append({"fold": fold, "trades": len(fold_trades), "wr": wr_f, "pnl": pnl_f,
+                                     "start": "", "end": ""})
+            all_trades.extend(fold_trades)
+            start += test_bars
 
     # === SUMMARY ===
     console.print("\n" + "=" * 70)
@@ -270,7 +416,7 @@ def run_backtest(
     vol_drop = sum(1 for t in all_trades if t.exit_reason == "VOL_DROP")
     timeout = sum(1 for t in all_trades if t.exit_reason in ("TIMEOUT", "END"))
 
-    pos_size = 1000 * 5 / 11
+    pos_size = 1000 * 5 / max_open
     fee_per_trade = 2 * pos_size * 0.0002
     total_fees = fee_per_trade * n
     gross = pos_size * total_pnl / 100
@@ -342,17 +488,22 @@ def run_backtest(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Volume Bars Backtest (matches live bot)")
+    parser = argparse.ArgumentParser(description="Volume Bars Backtest")
     parser.add_argument("--days", type=int, default=1200, help="Days of history (default: 1200)")
     parser.add_argument("--train-bars", type=int, default=1000, help="Train window in vol bars")
     parser.add_argument("--test-bars", type=int, default=300, help="Test window in vol bars")
     parser.add_argument("--sl", type=float, default=2.0, help="SL multiplier (default: 2.0)")
     parser.add_argument("--tp", type=float, default=4.0, help="TP multiplier (default: 4.0)")
     parser.add_argument("--no-cache", action="store_true", help="Force API fetch")
+    parser.add_argument("--max-open", type=int, default=11, help="Max open positions (default: 11, <11 = global mode)")
+    parser.add_argument("--no-guards", action="store_true", help="Disable ADX/RSI/ATR guards (HTF+ROC only)")
+    parser.add_argument("--rank", type=str, default="alphabetical", choices=["alphabetical", "roc", "adx", "roc_adx"],
+                        help="Signal ranking for global mode (default: alphabetical)")
     args = parser.parse_args()
 
     run_backtest(
         total_days=args.days, train_bars=args.train_bars,
         test_bars=args.test_bars, sl_mult=args.sl, tp_mult=args.tp,
-        use_cache=not args.no_cache,
+        use_cache=not args.no_cache, max_open=args.max_open,
+        no_guards=args.no_guards, rank_by=args.rank,
     )
