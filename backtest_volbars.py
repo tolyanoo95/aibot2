@@ -37,7 +37,7 @@ console = Console()
 ADX_MIN = 20
 LONG_MOM = 0.30
 SHORT_MOM = 0.10
-MOVE_SL_STEPS = [(0.15, 0.50), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]
+MOVE_SL_STEPS = [(0.15, 0.20), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]
 MOVE_SL_TRAIL = 1.0
 
 
@@ -315,9 +315,7 @@ def run_backtest(
                         if pos.direction=='LONG' and h-pos.avg_price >= sa*ea: triggered = True
                         elif pos.direction=='SHORT' and pos.avg_price-l >= sa*ea: triggered = True
                         if triggered:
-                            ns_ = pos.avg_price + st_*ea if pos.direction=='LONG' else pos.avg_price - st_*ea
-                            if pos.direction=='LONG': pos.hard_sl = max(pos.hard_sl, ns_)
-                            else: pos.hard_sl = min(pos.hard_sl, ns_)
+                            pos.hard_sl = pos.avg_price + st_*ea if pos.direction=='LONG' else pos.avg_price - st_*ea
                             pos.sl_step += 1
                     elif MOVE_SL_TRAIL > 0:
                         if pos.direction == 'LONG':

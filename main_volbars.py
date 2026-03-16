@@ -79,7 +79,7 @@ MAX_OPEN = 11
 MAX_DCA = 3
 DCA_STEP_MULT = 1.0
 COOLDOWN_BARS = 3
-MOVE_SL_STEPS = [(0.15, 0.50), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]  # 4-step: mini-TP at +0.15→+0.50, then progressive (max/min protected)
+MOVE_SL_STEPS = [(0.15, 0.20), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]  # 4-step: mini-TP at +0.15, then 0.5→+0.25, 1.0→+0.5, 2.0→+1.0
 MOVE_SL_TRAIL = 1.0   # after all steps: trail SL at this distance from best price (ATR)
 MOVE_SL_CHECK = 15    # check every 15 seconds
 WARMUP_DAYS = 60
@@ -971,13 +971,10 @@ class VolumeBarsBot:
                             triggered = True
                         if triggered:
                             new_sl = pos.avg_price + step_to * ea if pos.direction == "LONG" else pos.avg_price - step_to * ea
-                            if pos.direction == "LONG":
-                                pos.hard_sl = max(pos.hard_sl, new_sl)
-                            else:
-                                pos.hard_sl = min(pos.hard_sl, new_sl)
+                            pos.hard_sl = new_sl
                             pos.sl_step += 1
                             pos.sl_moved = True
-                            logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(pos.hard_sl)}")
+                            logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(new_sl)}")
                             self._log_sl_moved(pos)
                     elif MOVE_SL_TRAIL > 0:
                         if pos.direction == "LONG":
@@ -1168,13 +1165,10 @@ class VolumeBarsBot:
                                 triggered = True
                             if triggered:
                                 new_sl = pos.avg_price + step_to * ea if pos.direction == "LONG" else pos.avg_price - step_to * ea
-                                if pos.direction == "LONG":
-                                    pos.hard_sl = max(pos.hard_sl, new_sl)
-                                else:
-                                    pos.hard_sl = min(pos.hard_sl, new_sl)
+                                pos.hard_sl = new_sl
                                 pos.sl_step += 1
                                 pos.sl_moved = True
-                                logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(pos.hard_sl)} (60s check)")
+                                logger.info(f"  SL_MOVED {pos.symbol} {pos.direction} step {pos.sl_step}/{len(MOVE_SL_STEPS)} → {_pfmt(new_sl)} (60s check)")
                                 self._log_sl_moved(pos)
                         elif MOVE_SL_TRAIL > 0:
                             if pos.direction == "LONG":

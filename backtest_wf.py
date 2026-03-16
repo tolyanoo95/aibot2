@@ -404,13 +404,11 @@ def simulate_dca_trades(
                     step_at, step_to = steps[pos._sl_step]
                     if pos.direction == "LONG":
                         if high[bar_idx] - pos.avg_price >= step_at * entry_atr:
-                            new_sl = pos.avg_price + step_to * entry_atr
-                            pos.hard_sl = max(pos.hard_sl, new_sl)
+                            pos.hard_sl = pos.avg_price + step_to * entry_atr
                             pos._sl_step += 1
                     else:
                         if pos.avg_price - low[bar_idx] >= step_at * entry_atr:
-                            new_sl = pos.avg_price - step_to * entry_atr
-                            pos.hard_sl = min(pos.hard_sl, new_sl)
+                            pos.hard_sl = pos.avg_price - step_to * entry_atr
                             pos._sl_step += 1
                 elif move_sl_trail > 0 and pos._sl_step >= len(steps):
                     if pos.direction == "LONG":
