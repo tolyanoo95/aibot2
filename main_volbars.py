@@ -1155,29 +1155,90 @@ class VolumeBarsBot:
                        (pos.direction == "SHORT" and new_sl < pos.hard_sl):
                         pos.hard_sl = new_sl
 
-                if pos.sl_moved:
-                    sl_hit = False
-                    if pos.direction == "LONG" and price <= pos.hard_sl:
-                        pnl_pct = (price - pos.avg_price) / pos.avg_price * 100 * pos.total_size
-                        sl_hit = True
-                    elif pos.direction == "SHORT" and price >= pos.hard_sl:
-                        pnl_pct = (pos.avg_price - price) / pos.avg_price * 100 * pos.total_size
-                        sl_hit = True
+                # Check all exits: SL_MOVED > HARD_SL > TP
+                exit_reason = None
+                exit_price = price
 
-                    if sl_hit:
-                        logger.info(f"  SL_HIT {pos.direction} {pos.symbol} @ {_pfmt(price)} | PnL {pnl_pct:+.2f}% (ws)")
-                        self._log_trade_close(pos, price, "SL_MOVED", pnl_pct)
-                        self.positions.remove(pos)
-                        pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
-                        self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
-                        pair_dir_key = f"{pos.symbol}_{pos.direction}"
+                if pos.sl_moved:
+                    if pos.direction == "LONG" and price <= pos.hard_sl:
+                        exit_reason = "SL_MOVED"
+                    elif pos.direction == "SHORT" and price >= pos.hard_sl:
+                        exit_reason = "SL_MOVED"
+
+                if not exit_reason:
+                    if pos.direction == "LONG" and price <= pos.hard_sl:
+                        exit_reason = "HARD_SL"
+                    elif pos.direction == "SHORT" and price >= pos.hard_sl:
+                        exit_reason = "HARD_SL"
+
+                if not exit_reason:
+                    if pos.direction == "LONG" and price >= pos.tp:
+                        exit_reason = "TP"
+                    elif pos.direction == "SHORT" and price <= pos.tp:
+                        exit_reason = "TP"
+
+                if exit_reason:
+                    if pos.direction == "LONG":
+                        pnl_pct = (price - pos.avg_price) / pos.avg_price * 100 * pos.total_size
+                    else:
+                        pnl_pct = (pos.avg_price - price) / pos.avg_price * 100 * pos.total_size
+                    logger.info(f"  {exit_reason} {pos.direction} {pos.symbol} @ {_pfmt(price)} | PnL {pnl_pct:+.2f}% (ws)")
+                    self._log_trade_close(pos, price, exit_reason, pnl_pct)
+                    self.positions.remove(pos)
+                    pair_vb = self.vol_bar_counts.get(pos.symbol, 0)
+                    self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
+                    pair_dir_key = f"{pos.symbol}_{pos.direction}"
+                    if exit_reason == "HARD_SL":
+                        self.pair_sl_streaks[pair_dir_key] = self.pair_sl_streaks.get(pair_dir_key, 0) + 1
+                        if self.pair_sl_streaks[pair_dir_key] >= self.PAIR_COOLDOWN_SL:
+                            self.pair_dir_cooldowns[pair_dir_key] = pair_vb + self.PAIR_COOLDOWN_BARS
+                    else:
                         self.pair_sl_streaks[pair_dir_key] = 0
 
     def _process_kline_1m(self, symbol: str, o: float, h: float, l: float, c: float, vol: float, kline_time):
-        """Process a closed 1m kline: accumulate into volume bar, check signal on completion."""
+        """Process a closed 1m kline: accumulate volume bar + aggregate 1m→15m for ATR."""
         if symbol not in self.vol_buffers or symbol not in self.vol_bars:
             return
 
+        # Aggregate 1m → 15m for ATR update (runs on every 1m kline)
+        if not hasattr(self, '_1m_buffers'):
+            self._1m_buffers = {}
+        mb = self._1m_buffers.get(symbol, {"count": 0, "high": 0, "low": float('inf'), "open": 0, "close": 0, "vol": 0})
+        if mb["count"] == 0:
+            mb["open"] = o; mb["high"] = h; mb["low"] = l
+        else:
+            mb["high"] = max(mb["high"], h); mb["low"] = min(mb["low"], l)
+        mb["close"] = c; mb["vol"] += vol; mb["count"] += 1
+        if mb["count"] >= 15:
+            bar_15m = pd.DataFrame([{
+                "open": mb["open"], "high": mb["high"], "low": mb["low"],
+                "close": mb["close"], "volume": mb["vol"],
+            }], index=[kline_time])
+            with self._lock:
+                if symbol in self.time_data:
+                    base = self.time_data[symbol][["open", "high", "low", "close", "volume"]]
+                    base = pd.concat([base, bar_15m])
+                    base = base[~base.index.duplicated(keep='last')]
+                    self.time_data[symbol] = self.indicators.calculate_all(base.tail(1000))
+                    if symbol in self.vol_bars:
+                        time_atr = self.time_data[symbol]["atr"].reindex(
+                            self.vol_bars[symbol].index, method="ffill")
+                        self.vol_bars[symbol]["atr"] = time_atr.values
+                if symbol in self.vol_history:
+                    self.vol_history[symbol].append(mb["vol"])
+                    if len(self.vol_history[symbol]) > 960:
+                        self.vol_history[symbol] = self.vol_history[symbol][-960:]
+                    self.time_bar_counts[symbol] = self.time_bar_counts.get(symbol, 0) + 1
+                    if self.time_bar_counts[symbol] % 960 == 0:
+                        new_thr = float(np.median(self.vol_history[symbol])) * 2
+                        old_thr = self.vol_thresholds.get(symbol, 0)
+                        self.vol_thresholds[symbol] = new_thr
+                        if abs(new_thr - old_thr) / max(old_thr, 1) > 0.05:
+                            logger.info(f"  {symbol} threshold: {old_thr:.0f} → {new_thr:.0f}")
+            mb = {"count": 0, "high": 0, "low": float('inf'), "open": 0, "close": 0, "vol": 0}
+        self._1m_buffers[symbol] = mb
+
+        # Accumulate volume bar
         buf = self.vol_buffers[symbol]
 
         with self._lock:
@@ -1272,6 +1333,43 @@ class VolumeBarsBot:
         self.vol_bar_counts[symbol] = self.vol_bar_counts.get(symbol, 0) + 1
         logger.info(f"  RT_BAR {symbol} vol={bar_vol:.0f} threshold={threshold:.0f}")
 
+        # Vol_drop + timeout check on bar completion
+        with self._lock:
+            vdf = self.vol_bars.get(symbol)
+            for pos in list(self.positions):
+                if pos.symbol != symbol:
+                    continue
+                pos.bars_held += 1
+
+                exit_reason = None
+                if vdf is not None and pos.bars_held >= 3 and len(vdf) >= 3:
+                    vol_vals = vdf["volume"].values
+                    vol_ma20 = pd.Series(vol_vals).rolling(20, min_periods=1).mean().values
+                    j = len(vdf) - 1
+                    if vol_ma20[j] > 0 and vol_vals[j-2:j+1].mean() < vol_ma20[j] * 0.5:
+                        exit_reason = "VOL_DROP"
+
+                if not exit_reason and pos.bars_held >= 24:
+                    exit_reason = "TIMEOUT"
+
+                if exit_reason:
+                    try:
+                        ticker = self.fetcher.exchange.fetch_ticker(pos.symbol)
+                        exit_price = float(ticker["last"])
+                    except Exception:
+                        exit_price = c
+                    if pos.direction == "LONG":
+                        pnl_pct = (exit_price - pos.avg_price) / pos.avg_price * 100 * pos.total_size
+                    else:
+                        pnl_pct = (pos.avg_price - exit_price) / pos.avg_price * 100 * pos.total_size
+                    logger.info(f"  {exit_reason} {pos.direction} {pos.symbol} @ {_pfmt(exit_price)} | PnL {pnl_pct:+.2f}% | Bars: {pos.bars_held}")
+                    self._log_trade_close(pos, exit_price, exit_reason, pnl_pct)
+                    self.positions.remove(pos)
+                    pair_vb = self.vol_bar_counts.get(symbol, 0)
+                    self.cooldowns[symbol] = pair_vb + COOLDOWN_BARS
+                    pair_dir_key = f"{pos.symbol}_{pos.direction}"
+                    self.pair_sl_streaks[pair_dir_key] = 0
+
         self._try_dca(symbol)
 
         signal = self.check_signal(symbol)
@@ -1280,10 +1378,6 @@ class VolumeBarsBot:
             with self._lock:
                 self.open_position(signal)
 
-        with self._lock:
-            for pos in list(self.positions):
-                if pos.symbol == symbol:
-                    pos.bars_held += 1
 
     def _sl_monitor_ws(self):
         """WebSocket: miniTicker for SL monitoring + kline_1m for real-time volume bars."""
@@ -1425,22 +1519,12 @@ class VolumeBarsBot:
         ws_thread.start()
         logger.info(f"WebSocket started (miniTicker + kline_1m, {len(MOVE_SL_STEPS)}-step Move SL + trail {MOVE_SL_TRAIL}x ATR)")
 
-        logger.info(f"Starting scan loop (aligned to 15m bar close)...")
+        logger.info(f"Starting backup scan loop (every 15m, position status only)...")
         while True:
             try:
                 self.scan()
-
-                # Wait until next 15m bar close (:00, :15, :30, :45) + 5 sec buffer
-                from datetime import datetime, timedelta
-                now = datetime.utcnow()
-                minutes = now.minute
-                next_bar = 15 - (minutes % 15)
-                if next_bar == 0:
-                    next_bar = 15
-                wait_until = now.replace(second=0, microsecond=0) + timedelta(minutes=next_bar, seconds=5)
-                wait_secs = max(10, (wait_until - datetime.utcnow()).total_seconds())
-                logger.info(f"  Next scan at {wait_until.strftime('%H:%M:%S')} UTC ({wait_secs:.0f}s)")
-                time.sleep(wait_secs)
+                self._save_state()
+                time.sleep(900)
             except KeyboardInterrupt:
                 logger.info("Stopping bot...")
                 break
