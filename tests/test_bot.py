@@ -145,35 +145,20 @@ class TestVolumeBar:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestMoveSL:
-    def test_step0_breakeven(self):
-        """Step0: price +0.05 ATR → SL moves to +0.05 ATR."""
+    def test_step1_scalp(self):
+        """Step1: price +0.25 ATR → SL moves to +0.30 ATR."""
         bot = make_bot()
         pos = make_position(entry=74000, atr=350)
         bot.positions.append(pos)
         original_sl = pos.hard_sl
 
-        # Price reaches +0.05 ATR = 74000 + 17.5 = 74017.5
-        bot._process_price("BTC/USDT", 74018.0)
-
-        assert pos.sl_step == 1
-        assert pos.hard_sl > original_sl
-        expected_sl = 74000 + 0.05 * 350  # 74017.5
-        assert abs(pos.hard_sl - expected_sl) < 1.0
-
-    def test_step1_scalp(self):
-        """Step1: price +0.25 ATR → SL moves to +0.15 ATR."""
-        bot = make_bot()
-        pos = make_position(entry=74000, atr=350, sl_step=1,
-                           hard_sl=74000 + 0.05 * 350)
-        pos.sl_moved = True
-        bot.positions.append(pos)
-
         # Price reaches +0.25 ATR = 74087.5
         bot._process_price("BTC/USDT", 74088.0)
 
-        assert pos.sl_step == 2
-        expected_sl = 74000 + 0.15 * 350  # 74052.5
-        assert pos.hard_sl >= expected_sl - 1.0
+        assert pos.sl_step == 1
+        assert pos.hard_sl > original_sl
+        expected_sl = 74000 + 0.30 * 350  # 74105
+        assert abs(pos.hard_sl - expected_sl) < 1.0
 
     def test_max_min_protection_long(self):
         """Later steps should never downgrade SL (LONG)."""
@@ -181,18 +166,13 @@ class TestMoveSL:
         pos = make_position(entry=74000, atr=350)
         bot.positions.append(pos)
 
-        # Step0: SL → +0.05 ATR = 74017.5
-        bot._process_price("BTC/USDT", 74018.0)
-        sl_after_step0 = pos.hard_sl
-
-        # Step1: move_to=0.15 ATR = 74052.5 (higher than step0)
+        # Step1: SL → +0.30 ATR = 74105
         bot._process_price("BTC/USDT", 74088.0)
-        assert pos.hard_sl >= sl_after_step0
+        sl_after_step1 = pos.hard_sl
 
-        # Step2: move_to=0.25 ATR = 74087.5 (higher)
+        # Step2: move_to=0.25 ATR = 74087.5 (lower than step1 → should keep step1)
         bot._process_price("BTC/USDT", 74175.0)
-        sl_after_step2 = pos.hard_sl
-        assert sl_after_step2 >= 74000 + 0.25 * 350 - 1.0
+        assert pos.hard_sl >= sl_after_step1
 
     def test_max_min_protection_short(self):
         """Later steps should never upgrade SL for SHORT (SL should decrease)."""
@@ -214,12 +194,12 @@ class TestMoveSL:
         pos = make_position(entry=74000, atr=350)
         bot.positions.append(pos)
 
-        # Price spikes to +0.10 ATR then drops back to entry
-        bot._process_price("BTC/USDT", 74035.0)  # +0.10 ATR → step0 triggers
+        # Price reaches +0.25 ATR → step1 triggers
+        bot._process_price("BTC/USDT", 74088.0)
         assert pos.sl_step == 1
 
-        # max_price is now 74035, but current price is back at entry
-        # Step1 needs +0.25 ATR = 74087.5 — should NOT trigger at current price
+        # max_price is now 74088, but current price is back at entry
+        # Step2 needs +0.50 ATR = 74175 — should NOT trigger at current price
         bot._process_price("BTC/USDT", 74000.0)
         assert pos.sl_step == 1  # still step 1, not triggered by max_price
 
@@ -370,7 +350,8 @@ class TestPositions:
         pos = make_position(entry=74000, atr=350)
         bot.positions.append(pos)
 
-        bot._process_price("BTC/USDT", 74100.0)
+        # Price below step1 activation (+0.25 ATR = 74087.5)
+        bot._process_price("BTC/USDT", 74050.0)
 
         assert len(bot.positions) == 1
 
@@ -523,12 +504,12 @@ class TestThreadSafety:
 
 class TestConfig:
     def test_move_sl_steps_count(self):
-        """Should have 5 steps."""
-        assert len(MOVE_SL_STEPS) == 5
+        """Should have 4 steps."""
+        assert len(MOVE_SL_STEPS) == 4
 
-    def test_step0_is_breakeven(self):
-        """Step0 activation == move_to (breakeven)."""
-        assert MOVE_SL_STEPS[0] == (0.05, 0.05)
+    def test_step1_is_scalp(self):
+        """Step1 activation=0.25, move_to=0.30."""
+        assert MOVE_SL_STEPS[0] == (0.25, 0.30)
 
     def test_steps_activation_increasing(self):
         """Activation levels should be increasing."""
