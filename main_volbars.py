@@ -1023,9 +1023,9 @@ class VolumeBarsBot:
         kl_age = time.time() - self._ws_last_kline if hasattr(self, '_ws_last_kline') else 999
         ws_status = "OK" if ws_age < 60 else f"DEAD ({ws_age:.0f}s)"
         kl_status = "OK" if kl_age < 10 else f"DEAD ({kl_age:.0f}s)"
-        k_count = getattr(self, '_kline_count', 0)
+        t_count = getattr(self, '_trade_count', 0)
         logger.info(f"\n{'='*50}")
-        logger.info(f"Scan #{self.scan_count} | Pos: {len(self.positions)} | WS: {ws_status} | Kline: {kl_status} | K1m: {k_count}")
+        logger.info(f"Scan #{self.scan_count} | Pos: {len(self.positions)} | WS: {ws_status} | Trades: {t_count}")
 
         symbols = list(self.vol_bars.keys())
 
@@ -1240,7 +1240,7 @@ class VolumeBarsBot:
 
 
     def _sl_monitor_ws(self):
-        """WebSocket: miniTicker for SL monitoring + kline_1m for real-time volume bars."""
+        """WebSocket: aggTrade for real-time price monitoring + volume bar construction."""
         try:
             import websocket
         except ImportError:
@@ -1252,8 +1252,7 @@ class VolumeBarsBot:
         stream_parts = []
         for s in self.pairs:
             raw = s.replace("/", "").lower()
-            stream_parts.append(f"{raw}@miniTicker")
-            stream_parts.append(f"{raw}@kline_1m")
+            stream_parts.append(f"{raw}@aggTrade")
             ws_to_pair[s.replace("/", "").upper()] = s
         streams = "/".join(stream_parts)
         url = f"wss://fstream.binance.com/stream?streams={streams}"
@@ -1261,54 +1260,119 @@ class VolumeBarsBot:
         self._ws_last_msg = time.time()
         self._ws_last_kline = time.time()
         self._ws_start_time = time.time()
+        self._trade_count = 0
         _ws_ref = [None]
 
-        self._kline_count = 0
-
-        def _kline_worker():
-            """Separate thread for kline processing — never blocks WS callback."""
+        def _bar_worker():
+            """Separate thread for volume bar completion — never blocks WS callback."""
             while True:
                 try:
                     item = self._msg_queue.get()
                     if item is None:
                         break
-                    symbol, o, h, l, c, v, kline_time = item
-                    self._kline_count += 1
-                    self._process_kline_1m(symbol, o, h, l, c, v, kline_time)
+                    symbol, bar_open, bar_high, bar_low, bar_close, bar_vol, bar_start = item
+                    self._complete_volume_bar(symbol, bar_open, bar_high, bar_low, bar_close, bar_vol, bar_start)
                 except Exception as e:
-                    logger.error(f"kline worker error: {e}", exc_info=True)
+                    logger.error(f"bar worker error: {e}", exc_info=True)
 
-        kw = threading.Thread(target=_kline_worker, daemon=True)
-        kw.start()
+        bw = threading.Thread(target=_bar_worker, daemon=True)
+        bw.start()
 
         def on_message(ws, message):
             self._ws_last_msg = time.time()
             try:
                 msg = json.loads(message)
-                stream = msg.get("stream", "")
                 data = msg.get("data", {})
+                sym_raw = data.get("s", "")
+                symbol = ws_to_pair.get(sym_raw)
+                if not symbol:
+                    return
 
-                if "@miniTicker" in stream:
-                    sym_raw = data.get("s", "")
-                    price = float(data.get("c", 0))
-                    if sym_raw and price > 0:
-                        symbol = ws_to_pair.get(sym_raw)
-                        if symbol:
-                            self._process_price(symbol, price)
+                price = float(data.get("p", 0))
+                qty = float(data.get("q", 0))
+                if price <= 0 or qty <= 0:
+                    return
 
-                elif "@kline" in stream:
-                    self._ws_last_kline = time.time()
-                    k = data.get("k", {})
-                    if not k.get("x", False):
-                        return
-                    sym_raw = k.get("s", "")
-                    symbol = ws_to_pair.get(sym_raw)
-                    if symbol:
-                        self._msg_queue.put((
-                            symbol,
-                            float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]),
-                            float(k["v"]), pd.Timestamp(k["t"], unit="ms"),
-                        ))
+                self._trade_count += 1
+                self._ws_last_kline = time.time()
+
+                # 1. SL/TP/Move SL check on every trade (real-time)
+                self._process_price(symbol, price)
+
+                # 2. Accumulate volume for volume bar
+                if symbol in self.vol_buffers:
+                    buf = self.vol_buffers[symbol]
+                    with self._lock:
+                        if buf["bar_open"] is None:
+                            buf["bar_open"] = price
+                            buf["bar_high"] = price
+                            buf["bar_low"] = price
+                            buf["bar_start"] = pd.Timestamp.now()
+                        buf["bar_high"] = max(buf["bar_high"], price)
+                        buf["bar_low"] = min(buf["bar_low"], price)
+                        buf["cum_vol"] += qty
+                        threshold = self.vol_thresholds.get(symbol, 2000)
+                        if buf["cum_vol"] >= threshold:
+                            bar_data = (buf["bar_open"], buf["bar_high"], buf["bar_low"],
+                                       price, buf["cum_vol"], buf["bar_start"])
+                            buf["cum_vol"] = 0
+                            buf["bar_open"] = None
+                            self._msg_queue.put((symbol, *bar_data))
+
+                # 3. Aggregate for ATR (every ~15 min worth of volume)
+                if not hasattr(self, '_1m_buffers'):
+                    self._1m_buffers = {}
+                mb = self._1m_buffers.get(symbol, {"count": 0, "high": 0, "low": float('inf'),
+                                                    "open": 0, "close": 0, "vol": 0, "last_min": -1})
+                cur_min = int(time.time() // 60)
+                if cur_min != mb.get("last_min", -1):
+                    if mb["count"] > 0:
+                        mb["count"] += 1
+                        mb["close"] = price
+                        mb["high"] = max(mb["high"], price)
+                        mb["low"] = min(mb["low"], price)
+                        mb["vol"] += qty
+                    if mb["count"] >= 15:
+                        bar_15m = pd.DataFrame([{
+                            "open": mb["open"], "high": mb["high"], "low": mb["low"],
+                            "close": mb["close"], "volume": mb["vol"],
+                        }], index=[pd.Timestamp.now()])
+                        with self._lock:
+                            if symbol in self.time_data:
+                                base = self.time_data[symbol][["open", "high", "low", "close", "volume"]]
+                                base = pd.concat([base, bar_15m])
+                                base = base[~base.index.duplicated(keep='last')]
+                                self.time_data[symbol] = self.indicators.calculate_all(base.tail(1000))
+                                if symbol in self.vol_bars:
+                                    time_atr = self.time_data[symbol]["atr"].reindex(
+                                        self.vol_bars[symbol].index, method="ffill")
+                                    self.vol_bars[symbol]["atr"] = time_atr.values
+                            if symbol in self.vol_history:
+                                self.vol_history[symbol].append(mb["vol"])
+                                if len(self.vol_history[symbol]) > 960:
+                                    self.vol_history[symbol] = self.vol_history[symbol][-960:]
+                                self.time_bar_counts[symbol] = self.time_bar_counts.get(symbol, 0) + 1
+                                if self.time_bar_counts[symbol] % 960 == 0:
+                                    new_thr = float(np.median(self.vol_history[symbol])) * 2
+                                    old_thr = self.vol_thresholds.get(symbol, 0)
+                                    self.vol_thresholds[symbol] = new_thr
+                                    if abs(new_thr - old_thr) / max(old_thr, 1) > 0.05:
+                                        logger.info(f"  {symbol} threshold: {old_thr:.0f} → {new_thr:.0f}")
+                        mb = {"count": 0, "high": 0, "low": float('inf'), "open": 0, "close": 0, "vol": 0, "last_min": cur_min}
+                    else:
+                        mb["last_min"] = cur_min
+                        if mb["count"] == 0:
+                            mb["open"] = price
+                            mb["high"] = price
+                            mb["low"] = price
+                        mb["count"] = max(mb["count"], 1)
+                else:
+                    mb["close"] = price
+                    mb["high"] = max(mb["high"], price)
+                    mb["low"] = min(mb["low"], price)
+                    mb["vol"] += qty
+                self._1m_buffers[symbol] = mb
+
             except Exception as e:
                 logger.warning(f"WS parse error: {e}")
 
@@ -1326,7 +1390,7 @@ class VolumeBarsBot:
                 self._1m_buffers.clear()
             nonlocal _backoff
             _backoff = 3
-            logger.info(f"WS connected: {len(self.pairs)} pairs (miniTicker + kline_1m)")
+            logger.info(f"WS connected: {len(self.pairs)} pairs (aggTrade)")
 
         def _watchdog():
             """Kill WS if no messages or no kline for too long."""
@@ -1435,7 +1499,7 @@ class VolumeBarsBot:
         ws_thread.start()
         poll_thread = threading.Thread(target=self._sl_monitor_poll, daemon=True)
         poll_thread.start()
-        logger.info(f"WebSocket + poll backup started ({len(MOVE_SL_STEPS)}-step Move SL + trail {MOVE_SL_TRAIL}x ATR)")
+        logger.info(f"WebSocket aggTrade + poll backup started ({len(MOVE_SL_STEPS)}-step Move SL + trail {MOVE_SL_TRAIL}x ATR)")
 
         logger.info(f"Starting backup scan loop (every 15m, position status only)...")
         while True:
