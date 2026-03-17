@@ -328,6 +328,30 @@ class VolumeBarsBot:
         self.vol_bar_counts[symbol] = self.vol_bar_counts.get(symbol, 0) + 1
         logger.info(f"  RT_BAR {symbol} vol={bar_vol:.0f} threshold={self.vol_thresholds.get(symbol,0):.0f}")
 
+        # Log full bar data for offline simulation
+        try:
+            vdf = self.vol_bars.get(symbol)
+            if vdf is not None and len(vdf) > 0:
+                j = len(vdf) - 1
+                roc = float(vdf["roc_12"].iloc[j]) if "roc_12" in vdf.columns else 0
+                adx = float(vdf["ADX_14"].iloc[j]) if "ADX_14" in vdf.columns else 0
+                rsi = float(vdf["rsi"].iloc[j]) if "rsi" in vdf.columns else 0
+                rsi_s = float(vdf["rsi"].diff(6).iloc[j]) if "rsi" in vdf.columns else 0
+                atr_v = float(vdf["atr"].iloc[j]) if "atr" in vdf.columns else 0
+                atr_ma = pd.Series(vdf["atr"].values).rolling(20, min_periods=1).mean().values
+                atr_exp = atr_v / atr_ma[j] if atr_ma[j] > 0 else 1.0
+                htf = float(vdf["htf_supertrend"].iloc[j]) if "htf_supertrend" in vdf.columns else 0
+                htf_dir = "UP" if htf > 0 else ("DN" if htf < 0 else "?")
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                line = (f"{now} BAR_DATA {symbol} O={_pfmt(bar_open)} H={_pfmt(bar_high)} L={_pfmt(bar_low)} "
+                        f"C={_pfmt(bar_close)} V={bar_vol:.0f} ATR={atr_v:.6f} ROC={roc:+.2f}% ADX={adx:.0f} "
+                        f"RSI={rsi:.0f} RSI_s={rsi_s:+.1f} ATR_EXP={atr_exp:.2f} HTF={htf_dir}\n")
+                with self._file_lock:
+                    with open("bar_data.log", "a") as f:
+                        f.write(line)
+        except Exception:
+            pass
+
         self._check_vol_drop_timeout(symbol, bar_close)
         self._try_dca(symbol)
 
