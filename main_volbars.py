@@ -631,6 +631,7 @@ class VolumeBarsBot:
             self._log_trade_close(ex, flip_price, "FLIP", flip_pnl)
             self.positions.remove(ex)
             self.cooldowns[symbol] = pair_vb + COOLDOWN_BARS
+            self._save_state()
 
         # Max open check for NEW positions only
         if len(self.positions) >= MAX_OPEN:
@@ -661,6 +662,7 @@ class VolumeBarsBot:
 
         logger.info(f"  OPEN {direction} {symbol} @ {_pfmt(price)} | SL={_pfmt(hard_sl)} TP={_pfmt(tp)} ATR={_pfmt(atr_val)}")
         self._log_trade_open(signal, pos)
+        self._save_state()
 
     def _log_dca_entry(self, pos: Position, price: float, signal: dict):
         """Log DCA entry to trades.log + update existing OPEN in paper_trades.json."""
@@ -1074,6 +1076,7 @@ class VolumeBarsBot:
                     self._log_trade_close(pos, exit_price, exit_reason, pnl_pct)
                     self.positions.remove(pos)
                     self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
+                    self._save_state()
 
     def scan(self):
         """Run one scan cycle — each pair fully independent in its own thread."""
@@ -1233,6 +1236,7 @@ class VolumeBarsBot:
                             self.pair_dir_cooldowns[pair_dir_key] = pair_vb + self.PAIR_COOLDOWN_BARS
                     else:
                         self.pair_sl_streaks[pair_dir_key] = 0
+                    self._save_state()
 
     def _process_kline_1m(self, symbol: str, o: float, h: float, l: float, c: float, vol: float, kline_time):
         """Process a closed 1m kline: accumulate volume bar + aggregate 1m→15m for ATR."""
@@ -1408,6 +1412,7 @@ class VolumeBarsBot:
                     self.cooldowns[symbol] = pair_vb + COOLDOWN_BARS
                     pair_dir_key = f"{pos.symbol}_{pos.direction}"
                     self.pair_sl_streaks[pair_dir_key] = 0
+                    self._save_state()
 
         self._try_dca(symbol)
 
@@ -1507,7 +1512,7 @@ class VolumeBarsBot:
                 _ws_ref[0] = ws
                 ws.run_forever(ping_interval=10, ping_timeout=5)
             except Exception as e:
-                logger.error(f"WS fatal: {e}")
+                logger.error(f"WS fatal: {e}", exc_info=True)
             logger.info("WS reconnecting in 3s...")
             time.sleep(3)
 
@@ -1545,7 +1550,7 @@ class VolumeBarsBot:
                     if price is not None:
                         self._process_price(pos.symbol, price)
             except Exception as e:
-                logger.error(f"SL poll error: {e}")
+                logger.error(f"SL poll error: {e}", exc_info=True)
                 time.sleep(10)
 
     @staticmethod
@@ -1594,9 +1599,11 @@ class VolumeBarsBot:
                 time.sleep(900)
             except KeyboardInterrupt:
                 logger.info("Stopping bot...")
+                self._save_state()
                 break
             except Exception as e:
-                logger.error(f"Scan error: {e}")
+                logger.error(f"Scan error: {e}", exc_info=True)
+                self._save_state()
                 time.sleep(60)
 
 
