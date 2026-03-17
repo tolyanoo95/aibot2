@@ -302,6 +302,123 @@ class VolumeBarsBot:
 
         logger.info(f"Initialized {len(self.vol_bars)} pairs")
 
+    def _complete_volume_bar(self, symbol: str, bar_open, bar_high, bar_low, bar_close, bar_vol, bar_start):
+        """Single method for volume bar completion: indicators, HTF, ATR, signals.
+        Called from both _process_kline_1m (WS) and update_volume_bars (fallback)."""
+        new_bar = pd.DataFrame([{
+            "open": bar_open, "high": bar_high, "low": bar_low,
+            "close": bar_close, "volume": bar_vol,
+        }], index=[bar_start])
+
+        with self._lock:
+            vb_base = self.vol_bars[symbol][["open", "high", "low", "close", "volume"]]
+            vb_base = pd.concat([vb_base, new_bar])
+            vb_base = vb_base[~vb_base.index.duplicated(keep='last')]
+            self.vol_bars[symbol] = self.indicators.calculate_all(vb_base.tail(1000))
+            self.vol_bars[symbol] = self.vol_bars[symbol][~self.vol_bars[symbol].index.duplicated(keep='last')]
+
+            if symbol in self.time_data:
+                time_atr = self.time_data[symbol]["atr"].reindex(
+                    self.vol_bars[symbol].index, method="ffill")
+                self.vol_bars[symbol]["atr"] = time_atr.values
+
+            self._apply_htf_supertrend(symbol)
+            self._update_htf_bar(symbol, bar_open, bar_high, bar_low, bar_close, bar_vol, bar_start)
+
+        self.vol_bar_counts[symbol] = self.vol_bar_counts.get(symbol, 0) + 1
+        logger.info(f"  RT_BAR {symbol} vol={bar_vol:.0f} threshold={self.vol_thresholds.get(symbol,0):.0f}")
+
+        self._check_vol_drop_timeout(symbol, bar_close)
+        self._try_dca(symbol)
+
+        signal = self.check_signal(symbol)
+        if signal:
+            logger.info(f"  RT_SIGNAL: {signal['direction']} {signal['symbol']} @ {_pfmt(signal['price'])} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
+            with self._lock:
+                self.open_position(signal)
+
+        with self._lock:
+            for pos in list(self.positions):
+                if pos.symbol == symbol:
+                    pos.bars_held += 1
+
+        self._save_state()
+
+    def _apply_htf_supertrend(self, symbol: str):
+        """Re-apply HTF Supertrend to vol_bars. Must be called under _lock."""
+        if symbol not in self.htf_vol_bars:
+            return
+        for col in ["ema_9", "ema_21", "ema_50"]:
+            if col in self.htf_vol_bars[symbol].columns:
+                self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(
+                    self.vol_bars[symbol].index, method="ffill")
+        htf_df = self.htf_vol_bars[symbol]
+        if "high" in htf_df.columns and "low" in htf_df.columns:
+            st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
+            if st is not None:
+                for sc in st.columns:
+                    if "SUPERTd" in sc:
+                        self.vol_bars[symbol]["htf_supertrend"] = st[sc].reindex(
+                            self.vol_bars[symbol].index, method="ffill")
+
+    def _update_htf_bar(self, symbol, bar_open, bar_high, bar_low, bar_close, bar_vol, bar_start):
+        """Update HTF volume bar accumulation. Must be called under _lock."""
+        if symbol not in self.htf_vol_bars:
+            return
+        htf_threshold = self.vol_thresholds.get(symbol, 2000) * 5
+        if not hasattr(self, '_htf_buffers'):
+            self._htf_buffers = {}
+        htf_buf = self._htf_buffers.get(symbol, {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None})
+        if htf_buf["bar_open"] is None:
+            htf_buf["bar_open"] = bar_open
+            htf_buf["bar_high"] = bar_high
+            htf_buf["bar_low"] = bar_low
+            htf_buf["bar_start"] = bar_start
+        htf_buf["bar_high"] = max(htf_buf["bar_high"], float(bar_high))
+        htf_buf["bar_low"] = min(htf_buf["bar_low"], float(bar_low))
+        htf_buf["cum_vol"] += bar_vol
+        if htf_buf["cum_vol"] >= htf_threshold:
+            htf_bar = pd.DataFrame([{
+                "open": htf_buf["bar_open"], "high": htf_buf["bar_high"],
+                "low": htf_buf["bar_low"], "close": float(bar_close),
+                "volume": htf_buf["cum_vol"],
+            }], index=[htf_buf["bar_start"]])
+            htf_base = self.htf_vol_bars[symbol][["open", "high", "low", "close", "volume"]]
+            htf_base = pd.concat([htf_base, htf_bar]).tail(200)
+            htf_base = htf_base[~htf_base.index.duplicated(keep='last')]
+            self.htf_vol_bars[symbol] = self.indicators.calculate_all(htf_base)
+            self._apply_htf_supertrend(symbol)
+            htf_buf = {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None}
+        self._htf_buffers[symbol] = htf_buf
+
+    def _check_vol_drop_timeout(self, symbol: str, close_price: float):
+        """Check vol_drop and timeout exits after volume bar completion."""
+        with self._lock:
+            vdf = self.vol_bars.get(symbol)
+            for pos in list(self.positions):
+                if pos.symbol != symbol:
+                    continue
+                exit_reason = None
+                if vdf is not None and pos.bars_held >= 3 and len(vdf) >= 3:
+                    vol_vals = vdf["volume"].values
+                    vol_ma20 = pd.Series(vol_vals).rolling(20, min_periods=1).mean().values
+                    j = len(vdf) - 1
+                    if vol_ma20[j] > 0 and vol_vals[j-2:j+1].mean() < vol_ma20[j] * 0.5:
+                        exit_reason = "VOL_DROP"
+                if not exit_reason and pos.bars_held >= 24:
+                    exit_reason = "TIMEOUT"
+                if exit_reason:
+                    if pos.direction == "LONG":
+                        pnl_pct = (close_price - pos.avg_price) / pos.avg_price * 100 * pos.total_size
+                    else:
+                        pnl_pct = (pos.avg_price - close_price) / pos.avg_price * 100 * pos.total_size
+                    logger.info(f"  {exit_reason} {pos.direction} {pos.symbol} @ {_pfmt(close_price)} | PnL {pnl_pct:+.2f}% | Bars: {pos.bars_held}")
+                    self._log_trade_close(pos, close_price, exit_reason, pnl_pct)
+                    self.positions.remove(pos)
+                    pair_vb = self.vol_bar_counts.get(symbol, 0)
+                    self.cooldowns[symbol] = pair_vb + COOLDOWN_BARS
+                    self.pair_sl_streaks[f"{pos.symbol}_{pos.direction}"] = 0
+
     def update_volume_bars(self, symbol: str) -> bool:
         """Fetch latest 15m bar and update volume bars. Returns True if new vol bar closed."""
         try:
@@ -312,7 +429,6 @@ class VolumeBarsBot:
             latest = df_new.iloc[-1]
             buf = self.vol_buffers[symbol]
 
-            # Update time data (keep only OHLCV before concat to avoid duplicate column issues)
             if symbol in self.time_data:
                 base = self.time_data[symbol][["open", "high", "low", "close", "volume"]]
                 base = pd.concat([base, df_new.iloc[[-1]]])
@@ -320,7 +436,6 @@ class VolumeBarsBot:
                 self.time_data[symbol] = self.indicators.calculate_all(base.tail(1000))
                 self.time_data[symbol] = self.time_data[symbol][~self.time_data[symbol].index.duplicated(keep='last')]
 
-            # Rolling threshold update (every 960 time bars, like backtest)
             if symbol in self.vol_history:
                 self.vol_history[symbol].append(float(latest["volume"]))
                 if len(self.vol_history[symbol]) > 960:
@@ -346,89 +461,18 @@ class VolumeBarsBot:
             threshold = self.vol_thresholds.get(symbol, 2000)
 
             if buf["cum_vol"] >= threshold:
-                new_bar = pd.DataFrame([{
-                    "open": buf["bar_open"],
-                    "high": buf["bar_high"],
-                    "low": buf["bar_low"],
-                    "close": latest["close"],
-                    "volume": buf["cum_vol"],
-                }], index=[buf["bar_start"]])
-
-                vb_base = self.vol_bars[symbol][["open", "high", "low", "close", "volume"]]
-                vb_base = pd.concat([vb_base, new_bar])
-                vb_base = vb_base[~vb_base.index.duplicated(keep='last')]
-                self.vol_bars[symbol] = self.indicators.calculate_all(vb_base.tail(1000))
-                self.vol_bars[symbol] = self.vol_bars[symbol][~self.vol_bars[symbol].index.duplicated(keep='last')]
-
-                # Update ATR from time bars
-                if symbol in self.time_data:
-                    time_atr = self.time_data[symbol]["atr"].reindex(
-                        self.vol_bars[symbol].index, method="ffill"
-                    )
-                    self.vol_bars[symbol]["atr"] = time_atr.values
-
-                # Re-apply HTF EMA + Supertrend values (lost after OHLCV-only recalculate)
-                if symbol in self.htf_vol_bars:
-                    for col in ["ema_9", "ema_21", "ema_50"]:
-                        if col in self.htf_vol_bars[symbol].columns:
-                            self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(
-                                self.vol_bars[symbol].index, method="ffill")
-                    htf_df = self.htf_vol_bars[symbol]
-                    if "high" in htf_df.columns and "low" in htf_df.columns:
-                        st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
-                        if st is not None:
-                            for sc in st.columns:
-                                if "SUPERTd" in sc:
-                                    self.vol_bars[symbol]["htf_supertrend"] = st[sc].reindex(
-                                        self.vol_bars[symbol].index, method="ffill")
-
-                # Update HTF volume bars (5x threshold)
-                if symbol in self.htf_vol_bars:
-                    htf_threshold = self.vol_thresholds.get(symbol, 2000) * 5
-                    htf_buf = getattr(self, '_htf_buffers', {}).get(symbol, {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None})
-                    if htf_buf["bar_open"] is None:
-                        htf_buf["bar_open"] = buf["bar_open"]
-                        htf_buf["bar_high"] = buf["bar_high"]
-                        htf_buf["bar_low"] = buf["bar_low"]
-                        htf_buf["bar_start"] = buf["bar_start"]
-                    htf_buf["bar_high"] = max(htf_buf["bar_high"], float(latest["high"]))
-                    htf_buf["bar_low"] = min(htf_buf["bar_low"], float(latest["low"]))
-                    htf_buf["cum_vol"] += buf["cum_vol"]
-                    if htf_buf["cum_vol"] >= htf_threshold:
-                        htf_bar = pd.DataFrame([{
-                            "open": htf_buf["bar_open"], "high": htf_buf["bar_high"],
-                            "low": htf_buf["bar_low"], "close": float(latest["close"]),
-                            "volume": htf_buf["cum_vol"],
-                        }], index=[htf_buf["bar_start"]])
-                        htf_base = self.htf_vol_bars[symbol][["open", "high", "low", "close", "volume"]]
-                        htf_base = pd.concat([htf_base, htf_bar]).tail(200)
-                        htf_base = htf_base[~htf_base.index.duplicated(keep='last')]
-                        self.htf_vol_bars[symbol] = self.indicators.calculate_all(htf_base)
-                        for col in ["ema_9", "ema_21", "ema_50"]:
-                            if col in self.htf_vol_bars[symbol].columns:
-                                self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(self.vol_bars[symbol].index, method="ffill")
-                        htf_df = self.htf_vol_bars[symbol]
-                        st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
-                        if st is not None:
-                            for sc in st.columns:
-                                if "SUPERTd" in sc:
-                                    self.vol_bars[symbol]["htf_supertrend"] = st[sc].reindex(self.vol_bars[symbol].index, method="ffill")
-                        htf_buf = {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None}
-                    if not hasattr(self, '_htf_buffers'):
-                        self._htf_buffers = {}
-                    self._htf_buffers[symbol] = htf_buf
-
-                # Reset buffer
+                self._complete_volume_bar(
+                    symbol, buf["bar_open"], buf["bar_high"], buf["bar_low"],
+                    latest["close"], buf["cum_vol"], buf["bar_start"],
+                )
                 buf["cum_vol"] = 0
                 buf["bar_open"] = None
-
-                logger.debug(f"{symbol}: new volume bar closed")
                 return True
 
             return False
 
         except Exception as e:
-            logger.error(f"Error updating {symbol}: {e}")
+            logger.error(f"Error updating {symbol}: {e}", exc_info=True)
             return False
 
     def check_signal(self, symbol: str) -> Optional[dict]:
@@ -1134,11 +1178,11 @@ class VolumeBarsBot:
                     self._save_state()
 
     def _process_kline_1m(self, symbol: str, o: float, h: float, l: float, c: float, vol: float, kline_time):
-        """Process a closed 1m kline: accumulate volume bar + aggregate 1m→15m for ATR."""
+        """Process a closed 1m kline: aggregate ATR + accumulate volume bar."""
         if symbol not in self.vol_buffers or symbol not in self.vol_bars:
             return
 
-        # Aggregate 1m → 15m for ATR update (runs on every 1m kline)
+        # Aggregate 1m → 15m for ATR update
         if not hasattr(self, '_1m_buffers'):
             self._1m_buffers = {}
         mb = self._1m_buffers.get(symbol, {"count": 0, "high": 0, "low": float('inf'), "open": 0, "close": 0, "vol": 0})
@@ -1178,142 +1222,21 @@ class VolumeBarsBot:
 
         # Accumulate volume bar
         buf = self.vol_buffers[symbol]
-
         with self._lock:
             if buf["bar_open"] is None:
-                buf["bar_open"] = o
-                buf["bar_high"] = h
-                buf["bar_low"] = l
-                buf["bar_start"] = kline_time
-
+                buf["bar_open"] = o; buf["bar_high"] = h
+                buf["bar_low"] = l; buf["bar_start"] = kline_time
             buf["bar_high"] = max(buf["bar_high"], h)
             buf["bar_low"] = min(buf["bar_low"], l)
             buf["cum_vol"] += vol
-
             threshold = self.vol_thresholds.get(symbol, 2000)
-
             if buf["cum_vol"] < threshold:
                 return
-
-            new_bar = pd.DataFrame([{
-                "open": buf["bar_open"],
-                "high": buf["bar_high"],
-                "low": buf["bar_low"],
-                "close": c,
-                "volume": buf["cum_vol"],
-            }], index=[buf["bar_start"]])
-
-            vb_base = self.vol_bars[symbol][["open", "high", "low", "close", "volume"]]
-            vb_base = pd.concat([vb_base, new_bar])
-            vb_base = vb_base[~vb_base.index.duplicated(keep='last')]
-            self.vol_bars[symbol] = self.indicators.calculate_all(vb_base.tail(1000))
-            self.vol_bars[symbol] = self.vol_bars[symbol][~self.vol_bars[symbol].index.duplicated(keep='last')]
-
-            if symbol in self.time_data:
-                time_atr = self.time_data[symbol]["atr"].reindex(
-                    self.vol_bars[symbol].index, method="ffill"
-                )
-                self.vol_bars[symbol]["atr"] = time_atr.values
-
-            if symbol in self.htf_vol_bars:
-                for col in ["ema_9", "ema_21", "ema_50"]:
-                    if col in self.htf_vol_bars[symbol].columns:
-                        self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(
-                            self.vol_bars[symbol].index, method="ffill")
-                htf_df = self.htf_vol_bars[symbol]
-                if "high" in htf_df.columns and "low" in htf_df.columns:
-                    st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
-                    if st is not None:
-                        for sc in st.columns:
-                            if "SUPERTd" in sc:
-                                self.vol_bars[symbol]["htf_supertrend"] = st[sc].reindex(
-                                    self.vol_bars[symbol].index, method="ffill")
-
-            # HTF volume bar accumulation
-            if symbol in self.htf_vol_bars:
-                htf_threshold = self.vol_thresholds.get(symbol, 2000) * 5
-                if not hasattr(self, '_htf_buffers'):
-                    self._htf_buffers = {}
-                htf_buf = self._htf_buffers.get(symbol, {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None})
-                if htf_buf["bar_open"] is None:
-                    htf_buf["bar_open"] = buf["bar_open"]
-                    htf_buf["bar_high"] = buf["bar_high"]
-                    htf_buf["bar_low"] = buf["bar_low"]
-                    htf_buf["bar_start"] = buf["bar_start"]
-                htf_buf["bar_high"] = max(htf_buf["bar_high"], h)
-                htf_buf["bar_low"] = min(htf_buf["bar_low"], l)
-                htf_buf["cum_vol"] += buf["cum_vol"]
-                if htf_buf["cum_vol"] >= htf_threshold:
-                    htf_bar = pd.DataFrame([{
-                        "open": htf_buf["bar_open"], "high": htf_buf["bar_high"],
-                        "low": htf_buf["bar_low"], "close": c,
-                        "volume": htf_buf["cum_vol"],
-                    }], index=[htf_buf["bar_start"]])
-                    htf_base = self.htf_vol_bars[symbol][["open", "high", "low", "close", "volume"]]
-                    htf_base = pd.concat([htf_base, htf_bar]).tail(200)
-                    htf_base = htf_base[~htf_base.index.duplicated(keep='last')]
-                    self.htf_vol_bars[symbol] = self.indicators.calculate_all(htf_base)
-                    htf_df2 = self.htf_vol_bars[symbol]
-                    st2 = pta.supertrend(htf_df2["high"], htf_df2["low"], htf_df2["close"], length=9, multiplier=3.0)
-                    if st2 is not None:
-                        for sc2 in st2.columns:
-                            if "SUPERTd" in sc2:
-                                self.vol_bars[symbol]["htf_supertrend"] = st2[sc2].reindex(self.vol_bars[symbol].index, method="ffill")
-                    htf_buf = {"cum_vol": 0, "bar_open": None, "bar_high": None, "bar_low": None, "bar_start": None}
-                self._htf_buffers[symbol] = htf_buf
-
-            bar_vol = buf["cum_vol"]
+            bar_data = (buf["bar_open"], buf["bar_high"], buf["bar_low"], c, buf["cum_vol"], buf["bar_start"])
             buf["cum_vol"] = 0
             buf["bar_open"] = None
 
-        self.vol_bar_counts[symbol] = self.vol_bar_counts.get(symbol, 0) + 1
-        logger.info(f"  RT_BAR {symbol} vol={bar_vol:.0f} threshold={threshold:.0f}")
-
-        # Vol_drop + timeout check on bar completion
-        with self._lock:
-            vdf = self.vol_bars.get(symbol)
-            for pos in list(self.positions):
-                if pos.symbol != symbol:
-                    continue
-                pos.bars_held += 1
-
-                exit_reason = None
-                if vdf is not None and pos.bars_held >= 3 and len(vdf) >= 3:
-                    vol_vals = vdf["volume"].values
-                    vol_ma20 = pd.Series(vol_vals).rolling(20, min_periods=1).mean().values
-                    j = len(vdf) - 1
-                    if vol_ma20[j] > 0 and vol_vals[j-2:j+1].mean() < vol_ma20[j] * 0.5:
-                        exit_reason = "VOL_DROP"
-
-                if not exit_reason and pos.bars_held >= 24:
-                    exit_reason = "TIMEOUT"
-
-                if exit_reason:
-                    try:
-                        ticker = self.fetcher.exchange.fetch_ticker(pos.symbol)
-                        exit_price = float(ticker["last"])
-                    except Exception:
-                        exit_price = c
-                    if pos.direction == "LONG":
-                        pnl_pct = (exit_price - pos.avg_price) / pos.avg_price * 100 * pos.total_size
-                    else:
-                        pnl_pct = (pos.avg_price - exit_price) / pos.avg_price * 100 * pos.total_size
-                    logger.info(f"  {exit_reason} {pos.direction} {pos.symbol} @ {_pfmt(exit_price)} | PnL {pnl_pct:+.2f}% | Bars: {pos.bars_held}")
-                    self._log_trade_close(pos, exit_price, exit_reason, pnl_pct)
-                    self.positions.remove(pos)
-                    pair_vb = self.vol_bar_counts.get(symbol, 0)
-                    self.cooldowns[symbol] = pair_vb + COOLDOWN_BARS
-                    pair_dir_key = f"{pos.symbol}_{pos.direction}"
-                    self.pair_sl_streaks[pair_dir_key] = 0
-                    self._save_state()
-
-        self._try_dca(symbol)
-
-        signal = self.check_signal(symbol)
-        if signal:
-            logger.info(f"  RT_SIGNAL: {signal['direction']} {signal['symbol']} @ {_pfmt(signal['price'])} roc={signal['roc_12']:.2f}% ADX={signal['adx']:.0f}")
-            with self._lock:
-                self.open_position(signal)
+        self._complete_volume_bar(symbol, *bar_data)
 
 
     def _sl_monitor_ws(self):
