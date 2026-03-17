@@ -937,8 +937,9 @@ class VolumeBarsBot:
             except Exception as e:
                 logger.debug(f"  {symbol} ATR refresh error: {e}")
 
-            # 2. Fallback: if kline_1m dead (>2 min), do full volume bar update + signal check
-            kline_alive = (time.time() - self._ws_last_kline) < 10 if hasattr(self, '_ws_last_kline') else False
+            # 2. Fallback: if kline_1m dead (>10s, after 60s grace), do full volume bar update + signal check
+            ws_age = time.time() - self._ws_start_time if hasattr(self, '_ws_start_time') else 0
+            kline_alive = (time.time() - self._ws_last_kline) < 10 if (hasattr(self, '_ws_last_kline') and ws_age > 60) else True
             if not kline_alive:
                 new_bar = self.update_volume_bars(symbol)
                 if new_bar:
@@ -1448,6 +1449,7 @@ class VolumeBarsBot:
 
         self._ws_last_msg = time.time()
         self._ws_last_kline = time.time()
+        self._ws_start_time = time.time()
         _ws_ref = [None]
 
         def on_message(ws, message):
@@ -1515,7 +1517,7 @@ class VolumeBarsBot:
                         _ws_ref[0].close()
                     except Exception:
                         pass
-                elif stale_kline > 10 and _ws_ref[0]:
+                elif stale_kline > 10 and _ws_ref[0] and (time.time() - self._ws_start_time) > 60:
                     logger.warning(f"WS watchdog: no kline_1m for {stale_kline:.0f}s (miniTicker OK), forcing reconnect")
                     try:
                         _ws_ref[0].close()
