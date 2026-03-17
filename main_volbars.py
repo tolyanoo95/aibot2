@@ -937,8 +937,8 @@ class VolumeBarsBot:
             except Exception as e:
                 logger.debug(f"  {symbol} ATR refresh error: {e}")
 
-            # 2. Fallback: if kline_1m dead (>5 min), do full volume bar update + signal check
-            kline_alive = (time.time() - self._ws_last_kline) < 300 if hasattr(self, '_ws_last_kline') else False
+            # 2. Fallback: if kline_1m dead (>2 min), do full volume bar update + signal check
+            kline_alive = (time.time() - self._ws_last_kline) < 120 if hasattr(self, '_ws_last_kline') else False
             if not kline_alive:
                 new_bar = self.update_volume_bars(symbol)
                 if new_bar:
@@ -1086,7 +1086,7 @@ class VolumeBarsBot:
         ws_age = time.time() - self._ws_last_msg if hasattr(self, '_ws_last_msg') else 999
         kl_age = time.time() - self._ws_last_kline if hasattr(self, '_ws_last_kline') else 999
         ws_status = "OK" if ws_age < 60 else f"DEAD ({ws_age:.0f}s)"
-        kl_status = "OK" if kl_age < 300 else f"DEAD ({kl_age:.0f}s)"
+        kl_status = "OK" if kl_age < 120 else f"DEAD ({kl_age:.0f}s)"
         k_count = getattr(self, '_kline_count', 0)
         logger.info(f"\n{'='*50}")
         logger.info(f"Scan #{self.scan_count} | Pos: {len(self.positions)} | WS: {ws_status} | Kline: {kl_status} | K1m: {k_count}")
@@ -1515,7 +1515,7 @@ class VolumeBarsBot:
                         _ws_ref[0].close()
                     except Exception:
                         pass
-                elif stale_kline > 300 and _ws_ref[0]:
+                elif stale_kline > 120 and _ws_ref[0]:
                     logger.warning(f"WS watchdog: no kline_1m for {stale_kline:.0f}s (miniTicker OK), forcing reconnect")
                     try:
                         _ws_ref[0].close()
