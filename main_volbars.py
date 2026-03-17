@@ -1512,11 +1512,15 @@ class VolumeBarsBot:
             time.sleep(3)
 
     def _sl_monitor_poll(self):
-        """Fallback polling SL monitor if WebSocket unavailable."""
+        """Backup polling: runs when WS is dead, sleeps when WS is alive."""
         from concurrent.futures import ThreadPoolExecutor
         while True:
             try:
                 time.sleep(MOVE_SL_CHECK)
+                ws_alive = (time.time() - self._ws_last_msg) < 15 if hasattr(self, '_ws_last_msg') else False
+                if ws_alive:
+                    continue
+
                 with self._lock:
                     active_positions = list(self.positions)
                 if not active_positions:
@@ -1578,7 +1582,9 @@ class VolumeBarsBot:
         import threading
         ws_thread = threading.Thread(target=self._sl_monitor_ws, daemon=True)
         ws_thread.start()
-        logger.info(f"WebSocket started (miniTicker + kline_1m, {len(MOVE_SL_STEPS)}-step Move SL + trail {MOVE_SL_TRAIL}x ATR)")
+        poll_thread = threading.Thread(target=self._sl_monitor_poll, daemon=True)
+        poll_thread.start()
+        logger.info(f"WebSocket + poll backup started ({len(MOVE_SL_STEPS)}-step Move SL + trail {MOVE_SL_TRAIL}x ATR)")
 
         logger.info(f"Starting backup scan loop (every 15m, position status only)...")
         while True:
