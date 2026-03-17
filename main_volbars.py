@@ -14,41 +14,39 @@ Usage:
 VERSION = "1.0.0"
 
 import argparse
-import functools
+import json
 import logging
 import os
+import pickle
+import queue
+import shutil
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+import pandas_ta as pta
 
 from src.config import config
 from src.data_fetcher import BinanceDataFetcher
 from src.indicators import TechnicalIndicators
 from backtest_volbars import resample_to_volume_bars
 
-logging.basicConfig(level=logging.WARNING)
-
-import functools
-_print = functools.partial(print, flush=True)
-
-class _Logger:
-    def __init__(self):
-        self._file = open("volbars_bot.log", "a")
-    def info(self, msg):
-        from datetime import datetime
-        line = f"{datetime.now().strftime('%H:%M:%S')} {msg}"
-        _print(line)
-        self._file.write(line + "\n")
-        self._file.flush()
-    def warning(self, msg): self.info(f"[WARN] {msg}")
-    def error(self, msg): self.info(f"[ERROR] {msg}")
-    def debug(self, msg): pass
-
-logger = _Logger()
+logger = logging.getLogger("volbars")
+logger.setLevel(logging.INFO)
+_fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+_sh = logging.StreamHandler(sys.stdout)
+_sh.setFormatter(_fmt)
+_sh.setLevel(logging.INFO)
+logger.addHandler(_sh)
+_fh = logging.FileHandler("volbars_bot.log")
+_fh.setFormatter(_fmt)
+_fh.setLevel(logging.INFO)
+logger.addHandler(_fh)
 
 def _pfmt(price: float) -> str:
     """Format price with correct decimal precision based on magnitude."""
@@ -109,7 +107,6 @@ class Position:
 
 class VolumeBarsBot:
     def __init__(self, paper: bool = True):
-        import threading
         self.paper = paper
         self.fetcher = BinanceDataFetcher(config)
         self.indicators = TechnicalIndicators()
@@ -134,130 +131,81 @@ class VolumeBarsBot:
         self.vol_history: Dict[str, list] = {}
         self.time_bar_counts: Dict[str, int] = {}
 
-        # Thread lock for shared resources (positions, global_lock, cooldowns)
         self._lock = threading.Lock()
+        self._file_lock = threading.Lock()
+        self._msg_queue = queue.Queue()
         self._data_dir = "data/volbars"
         os.makedirs(self._data_dir, exist_ok=True)
         self._trades_log = "trades.log"
         self._paper_trades_file = "paper_trades.json"
 
+    def _write_trades_log(self, line: str):
+        """Thread-safe append to trades.log."""
+        with self._file_lock:
+            with open(self._trades_log, "a") as f:
+                f.write(line)
+
+    def _write_paper_trades(self, trades_data):
+        """Thread-safe write to paper_trades.json."""
+        with self._file_lock:
+            with open(self._paper_trades_file, "w") as f:
+                json.dump(trades_data, f, indent=2)
+
+    def _read_paper_trades(self) -> list:
+        """Thread-safe read from paper_trades.json."""
+        with self._file_lock:
+            if not os.path.exists(self._paper_trades_file):
+                return []
+            try:
+                with open(self._paper_trades_file) as f:
+                    return json.load(f)
+            except Exception:
+                return []
+
     def _save_state(self):
-        """Save volume bars, positions, and bot state to disk."""
-        import json
+        """Save state to disk. Uses _file_lock only (no _lock — caller may hold it)."""
         try:
-            import pickle
-            # Save volume bars per symbol (pickle for reliability with duplicate cols)
-            for symbol, vdf in self.vol_bars.items():
-                fname = symbol.replace("/", "_").replace(":", "_")
-                with open(os.path.join(self._data_dir, f"{fname}_volbars.pkl"), "wb") as f:
-                    pickle.dump(vdf, f)
-
-            # Save thresholds
-            with open(os.path.join(self._data_dir, "thresholds.json"), "w") as f:
-                json.dump(self.vol_thresholds, f)
-
-            # Save bot state
+            pos_list = list(self.positions)
             state = {
                 "global_locked_dir": self.global_locked_dir,
                 "global_sl_streak": self.global_sl_streak,
                 "scan_count": self.scan_count,
-                "cooldowns": self.cooldowns,
-                "pair_sl_streaks": self.pair_sl_streaks,
-                "pair_dir_cooldowns": self.pair_dir_cooldowns,
-                "vol_bar_counts": self.vol_bar_counts,
+                "cooldowns": dict(self.cooldowns),
+                "pair_sl_streaks": dict(self.pair_sl_streaks),
+                "pair_dir_cooldowns": dict(self.pair_dir_cooldowns),
+                "vol_bar_counts": dict(self.vol_bar_counts),
                 "positions": [
                     {
                         "symbol": p.symbol, "direction": p.direction,
-                        "entries": p.entries, "avg_price": p.avg_price,
+                        "entries": list(p.entries), "avg_price": p.avg_price,
                         "total_size": p.total_size, "hard_sl": p.hard_sl,
                         "tp": p.tp, "entry_time": p.entry_time, "bars_held": p.bars_held,
                         "entry_atr": p.entry_atr, "max_price": p.max_price, "min_price": p.min_price,
                         "sl_moved": p.sl_moved, "sl_step": p.sl_step, "best_price": p.best_price,
-                    } for p in self.positions
+                    } for p in pos_list
                 ],
-                "vol_buffers": {k: {kk: (vv if not isinstance(vv, pd.Timestamp) else str(vv))
+                "vol_buffers": {k: {kk: (str(vv) if isinstance(vv, pd.Timestamp) else vv)
                                     for kk, vv in v.items()} for k, v in self.vol_buffers.items()},
             }
-            with open(os.path.join(self._data_dir, "state.json"), "w") as f:
-                json.dump(state, f, indent=2, default=str)
-
-            logger.info(f"  State saved to {self._data_dir}/")
+            with self._file_lock:
+                for symbol, vdf in self.vol_bars.items():
+                    fname = symbol.replace("/", "_").replace(":", "_")
+                    with open(os.path.join(self._data_dir, f"{fname}_volbars.pkl"), "wb") as f:
+                        pickle.dump(vdf, f)
+                with open(os.path.join(self._data_dir, "thresholds.json"), "w") as f:
+                    json.dump(dict(self.vol_thresholds), f)
+                with open(os.path.join(self._data_dir, "state.json"), "w") as f:
+                    json.dump(state, f, indent=2, default=str)
         except Exception as e:
-            logger.error(f"Save error: {e}")
+            logger.error(f"Save error: {e}", exc_info=True)
 
-    def _load_state(self) -> bool:
-        """Load saved state from disk. Returns True if loaded successfully."""
-        import json
-        state_path = os.path.join(self._data_dir, "state.json")
-        if not os.path.exists(state_path):
-            return False
-
-        try:
-            # Load volume bars
-            import pickle
-            loaded = 0
-            for symbol in self.pairs:
-                fname = symbol.replace("/", "_").replace(":", "_")
-                vb_path = os.path.join(self._data_dir, f"{fname}_volbars.pkl")
-                if os.path.exists(vb_path):
-                    with open(vb_path, "rb") as f:
-                        vdf = pickle.load(f)
-                    if len(vdf) > 50:
-                        self.vol_bars[symbol] = vdf
-                        loaded += 1
-
-            # Load thresholds
-            th_path = os.path.join(self._data_dir, "thresholds.json")
-            if os.path.exists(th_path):
-                with open(th_path) as f:
-                    self.vol_thresholds = json.load(f)
-
-            # Load state
-            with open(state_path) as f:
-                state = json.load(f)
-
-            self.global_locked_dir = state.get("global_locked_dir")
-            self.global_sl_streak = state.get("global_sl_streak", {"LONG": 0, "SHORT": 0})
-            self.scan_count = state.get("scan_count", 0)
-            self.cooldowns = state.get("cooldowns", {})
-            self.pair_sl_streaks = state.get("pair_sl_streaks", {})
-            self.pair_dir_cooldowns = state.get("pair_dir_cooldowns", {})
-            self.vol_bar_counts = state.get("vol_bar_counts", {})
-
-            for p_data in state.get("positions", []):
-                pos = Position(
-                    symbol=p_data["symbol"], direction=p_data["direction"],
-                    entries=p_data["entries"], avg_price=p_data["avg_price"],
-                    total_size=p_data["total_size"], hard_sl=p_data["hard_sl"],
-                    tp=p_data["tp"], entry_time=p_data.get("entry_time", 0),
-                    bars_held=p_data.get("bars_held", 0),
-                    entry_atr=p_data.get("entry_atr", 0),
-                    max_price=p_data.get("max_price", 0),
-                    min_price=p_data.get("min_price", float('inf')),
-                    sl_moved=p_data.get("sl_moved", False),
-                )
-                self.positions.append(pos)
-
-            # Init vol buffers
-            for symbol in self.vol_bars:
-                self.vol_buffers[symbol] = {
-                    "cum_vol": 0, "bar_open": None, "bar_high": None,
-                    "bar_low": None, "bar_start": None,
-                }
-
-            logger.info(f"  Loaded state: {loaded} pairs, {len(self.positions)} positions, lock={self.global_locked_dir}")
-            return loaded > 0
-
-        except Exception as e:
-            logger.error(f"Load error: {e}")
-            return False
+    # _load_state removed — initialize() handles state loading
 
     def initialize(self):
         """Always fetch fresh data. Load only positions/lock from saved state."""
         # Load positions + global lock (but NOT volume bars)
         state_path = os.path.join(self._data_dir, "state.json")
         if os.path.exists(state_path):
-            import json
             try:
                 with open(state_path) as f:
                     state = json.load(f)
@@ -316,7 +264,6 @@ class VolumeBarsBot:
                 for col in ["ema_9", "ema_21", "ema_50"]:
                     if col in htf_vdf.columns:
                         vdf[f"htf_{col}"] = htf_vdf[col].reindex(vdf.index, method="ffill")
-                import pandas_ta as pta
                 st = pta.supertrend(htf_vdf["high"], htf_vdf["low"], htf_vdf["close"], length=9, multiplier=3.0)
                 if st is not None:
                     for sc in st.columns:
@@ -426,7 +373,6 @@ class VolumeBarsBot:
                         if col in self.htf_vol_bars[symbol].columns:
                             self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(
                                 self.vol_bars[symbol].index, method="ffill")
-                    import pandas_ta as pta
                     htf_df = self.htf_vol_bars[symbol]
                     if "high" in htf_df.columns and "low" in htf_df.columns:
                         st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
@@ -461,7 +407,6 @@ class VolumeBarsBot:
                         for col in ["ema_9", "ema_21", "ema_50"]:
                             if col in self.htf_vol_bars[symbol].columns:
                                 self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(self.vol_bars[symbol].index, method="ffill")
-                        import pandas_ta as pta
                         htf_df = self.htf_vol_bars[symbol]
                         st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
                         if st is not None:
@@ -521,13 +466,11 @@ class VolumeBarsBot:
 
         def _log_blocked(guard_name):
             """Log blocked signal to trades.log for analysis."""
-            from datetime import datetime
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             line = (f"{now} BLOCKED {direction} {symbol} @ {_pfmt(bar_close_price)} | {guard_name} | "
                     f"roc={roc_12:+.2f}% ADX={adx:.0f} RSI_s={rsi_s6:+.1f} ATR_EXP={atr_exp:.2f} "
                     f"HTF={'UP' if htf_st > 0 else 'DN' if htf_st < 0 else '?'} ATR={atr_val:.6f}\n")
-            with open(self._trades_log, "a") as f:
-                f.write(line)
+            self._write_trades_log(line)
 
         # HTF Supertrend trend filter
         if not np.isnan(htf_st) and htf_st != 0:
@@ -563,17 +506,10 @@ class VolumeBarsBot:
         if np.isnan(atr_val) or atr_val <= 0:
             return None
 
-        # Get real-time price from exchange (not bar close)
-        try:
-            ticker = self.fetcher.exchange.fetch_ticker(symbol)
-            live_price = float(ticker["last"])
-        except Exception:
-            live_price = bar_close_price
-
         return {
             "symbol": symbol,
             "direction": direction,
-            "price": live_price,
+            "price": bar_close_price,
             "bar_open": float(vdf["open"].iloc[j]),
             "bar_high": float(vdf["high"].iloc[j]),
             "bar_low": float(vdf["low"].iloc[j]),
@@ -606,12 +542,7 @@ class VolumeBarsBot:
             ex = existing[0]
             if ex.direction == direction:
                 return  # same direction, DCA handled in _try_dca
-            # Flip: close opposite position
-            try:
-                ticker = self.fetcher.exchange.fetch_ticker(symbol)
-                flip_price = float(ticker["last"])
-            except Exception:
-                flip_price = price
+            flip_price = price
             if ex.direction == "LONG":
                 flip_pnl = (flip_price - ex.avg_price) / ex.avg_price * 100 * ex.total_size
             else:
@@ -666,23 +597,14 @@ class VolumeBarsBot:
 
     def _log_dca_entry(self, pos: Position, price: float, signal: dict):
         """Log DCA entry to trades.log + update existing OPEN in paper_trades.json."""
-        import json
-        from datetime import datetime
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # trades.log
         line = f"{now} DCA #{pos.total_size} {pos.direction} {pos.symbol} @ {_pfmt(price)} avg={_pfmt(pos.avg_price)} TP={_pfmt(pos.tp)}\n"
-        with open(self._trades_log, "a") as f:
-            f.write(line)
+        self._write_trades_log(line)
 
         # paper_trades.json — update existing OPEN object
-        trades = []
-        if os.path.exists(self._paper_trades_file):
-            try:
-                with open(self._paper_trades_file) as f:
-                    trades = json.load(f)
-            except Exception:
-                trades = []
+        trades = self._read_paper_trades()
         for t in reversed(trades):
             if t.get("symbol") == pos.symbol and t.get("status") == "OPEN":
                 if "dca" not in t:
@@ -696,13 +618,10 @@ class VolumeBarsBot:
                 t["tp"] = _prnd(pos.tp)
                 t["dca_count"] = pos.total_size
                 break
-        with open(self._paper_trades_file, "w") as f:
-            json.dump(trades, f, indent=2)
+        self._write_paper_trades(trades)
 
     def _log_trade_open(self, signal: dict, pos: Position):
         """Log trade open to trades.log + paper_trades.json."""
-        import json
-        from datetime import datetime
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # trades.log
@@ -713,8 +632,7 @@ class VolumeBarsBot:
             f"L={_pfmt(signal.get('bar_low',0))} C={_pfmt(signal.get('bar_close',0))} "
             f"ATR={_pfmt(signal['atr'])} ADX={signal.get('adx',0):.0f} roc={signal.get('roc_12',0):.2f}%\n"
         )
-        with open(self._trades_log, "a") as f:
-            f.write(line)
+        self._write_trades_log(line)
 
         # paper_trades.json
         p = pos.avg_price
@@ -737,34 +655,18 @@ class VolumeBarsBot:
             "open_time": now,
             "dca_count": 1,
         }
-        trades = []
-        if os.path.exists(self._paper_trades_file):
-            try:
-                with open(self._paper_trades_file) as f:
-                    trades = json.load(f)
-            except Exception:
-                trades = []
+        trades = self._read_paper_trades()
         trades.append(trade_record)
-        with open(self._paper_trades_file, "w") as f:
-            json.dump(trades, f, indent=2)
+        self._write_paper_trades(trades)
 
     def _log_sl_moved(self, pos: Position):
         """Log SL move event to trades.log + update OPEN in paper_trades.json."""
-        import json
-        from datetime import datetime
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         line = f"{now} SL_MOVED {pos.direction} {pos.symbol} step {pos.sl_step}/{len(MOVE_SL_STEPS)} new_sl={_pfmt(pos.hard_sl)} entry={_pfmt(pos.avg_price)} ATR={_pfmt(pos.entry_atr)}\n"
-        with open(self._trades_log, "a") as f:
-            f.write(line)
+        self._write_trades_log(line)
 
-        trades = []
-        if os.path.exists(self._paper_trades_file):
-            try:
-                with open(self._paper_trades_file) as f:
-                    trades = json.load(f)
-            except Exception:
-                trades = []
+        trades = self._read_paper_trades()
         for t in reversed(trades):
             if t.get("symbol") == pos.symbol and t.get("status") == "OPEN":
                 t["sl"] = _prnd(pos.hard_sl)
@@ -772,13 +674,10 @@ class VolumeBarsBot:
                 t["sl_moved_time"] = now
                 t["sl_step"] = pos.sl_step
                 break
-        with open(self._paper_trades_file, "w") as f:
-            json.dump(trades, f, indent=2)
+        self._write_paper_trades(trades)
 
     def _log_trade_close(self, pos: Position, exit_price: float, exit_reason: str, pnl_pct: float):
         """Log trade close to trades.log + append to paper_trades.json."""
-        import json
-        from datetime import datetime
 
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -797,17 +696,10 @@ class VolumeBarsBot:
         line = (f"{now} CLOSE {pos.direction} {pos.symbol} @ {_pfmt(exit_price)} | {exit_reason} | "
                 f"PnL {net_pnl_pct:+.2f}% (gross {pnl_pct:+.2f}% fee -{fee_pct:.2f}%) | DCA:{pos.total_size} | Bars:{pos.bars_held}{sl_info} | "
                 f"MFE:{mfe:+.2f}% MAE:{mae:.2f}% High:{_pfmt(pos.max_price)} Low:{_pfmt(pos.min_price)}\n")
-        with open(self._trades_log, "a") as f:
-            f.write(line)
+        self._write_trades_log(line)
 
         # paper_trades.json — update existing OPEN object
-        trades = []
-        if os.path.exists(self._paper_trades_file):
-            try:
-                with open(self._paper_trades_file) as f:
-                    trades = json.load(f)
-            except Exception:
-                trades = []
+        trades = self._read_paper_trades()
         for t in reversed(trades):
             if t.get("symbol") == pos.symbol and t.get("status") == "OPEN":
                 t["status"] = "CLOSED"
@@ -825,8 +717,7 @@ class VolumeBarsBot:
                 t["mae_pct"] = round(mae, 2)
                 t["close_time"] = now
                 break
-        with open(self._paper_trades_file, "w") as f:
-            json.dump(trades, f, indent=2)
+        self._write_paper_trades(trades)
 
     def _try_dca(self, symbol: str):
         """Check DCA for existing position — independent of signal guards (like backtest).
@@ -884,11 +775,7 @@ class VolumeBarsBot:
 
             current_low = float(vdf["low"].iloc[j])
             current_high = float(vdf["high"].iloc[j])
-            try:
-                ticker = self.fetcher.exchange.fetch_ticker(symbol)
-                price = float(ticker["last"])
-            except Exception:
-                price = float(vdf["close"].iloc[j])
+            price = float(vdf["close"].iloc[j])
 
             triggered = (pos.direction == "LONG" and current_low <= dca_level) or \
                         (pos.direction == "SHORT" and current_high >= dca_level)
@@ -959,6 +846,13 @@ class VolumeBarsBot:
 
     def _check_pair_positions(self, symbol: str, new_bar_closed: bool = True):
         """Check SL/TP/timeout for positions of this specific pair."""
+        # Fetch price OUTSIDE lock
+        try:
+            ticker = self.fetcher.exchange.fetch_ticker(symbol)
+            current_price = float(ticker["last"])
+        except Exception:
+            current_price = None
+
         with self._lock:
             for pos in list(self.positions):
                 if pos.symbol != symbol:
@@ -968,10 +862,7 @@ class VolumeBarsBot:
                 if vdf is None or len(vdf) < 2:
                     continue
 
-                try:
-                    ticker = self.fetcher.exchange.fetch_ticker(pos.symbol)
-                    current_price = float(ticker["last"])
-                except Exception:
+                if current_price is None:
                     current_price = float(vdf["close"].iloc[-1])
                 current_high = float(vdf["high"].iloc[-1])
                 current_low = float(vdf["low"].iloc[-1])
@@ -1074,11 +965,11 @@ class VolumeBarsBot:
                     else:
                         self.pair_sl_streaks[pair_dir_key] = 0
 
-                    self._log_trade_close(pos, exit_price, exit_reason, pnl_pct)
                     self.positions.remove(pos)
                     self.cooldowns[pos.symbol] = pair_vb + COOLDOWN_BARS
-                    self._save_state()
+                    self._log_trade_close(pos, exit_price, exit_reason, pnl_pct)
 
+        self._save_state()
     def scan(self):
         """Run one scan cycle — each pair fully independent in its own thread."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1329,7 +1220,6 @@ class VolumeBarsBot:
                     if col in self.htf_vol_bars[symbol].columns:
                         self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(
                             self.vol_bars[symbol].index, method="ffill")
-                import pandas_ta as pta
                 htf_df = self.htf_vol_bars[symbol]
                 if "high" in htf_df.columns and "low" in htf_df.columns:
                     st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
@@ -1363,7 +1253,6 @@ class VolumeBarsBot:
                     htf_base = pd.concat([htf_base, htf_bar]).tail(200)
                     htf_base = htf_base[~htf_base.index.duplicated(keep='last')]
                     self.htf_vol_bars[symbol] = self.indicators.calculate_all(htf_base)
-                    import pandas_ta as pta
                     htf_df2 = self.htf_vol_bars[symbol]
                     st2 = pta.supertrend(htf_df2["high"], htf_df2["low"], htf_df2["close"], length=9, multiplier=3.0)
                     if st2 is not None:
@@ -1429,7 +1318,6 @@ class VolumeBarsBot:
 
     def _sl_monitor_ws(self):
         """WebSocket: miniTicker for SL monitoring + kline_1m for real-time volume bars."""
-        import json
         try:
             import websocket
         except ImportError:
@@ -1452,17 +1340,30 @@ class VolumeBarsBot:
         self._ws_start_time = time.time()
         _ws_ref = [None]
 
+        self._kline_count = 0
+
+        def _kline_worker():
+            """Separate thread for kline processing — never blocks WS callback."""
+            while True:
+                try:
+                    item = self._msg_queue.get()
+                    if item is None:
+                        break
+                    symbol, o, h, l, c, v, kline_time = item
+                    self._kline_count += 1
+                    self._process_kline_1m(symbol, o, h, l, c, v, kline_time)
+                except Exception as e:
+                    logger.error(f"kline worker error: {e}", exc_info=True)
+
+        kw = threading.Thread(target=_kline_worker, daemon=True)
+        kw.start()
+
         def on_message(ws, message):
             self._ws_last_msg = time.time()
             try:
                 msg = json.loads(message)
                 stream = msg.get("stream", "")
                 data = msg.get("data", {})
-
-                if not hasattr(self, '_ws_stream_types'):
-                    self._ws_stream_types = {}
-                stype = stream.split("@")[-1] if "@" in stream else stream
-                self._ws_stream_types[stype] = self._ws_stream_types.get(stype, 0) + 1
 
                 if "@miniTicker" in stream:
                     sym_raw = data.get("s", "")
@@ -1480,18 +1381,11 @@ class VolumeBarsBot:
                     sym_raw = k.get("s", "")
                     symbol = ws_to_pair.get(sym_raw)
                     if symbol:
-                        if not hasattr(self, '_kline_count'):
-                            self._kline_count = 0
-                        self._kline_count += 1
-                        try:
-                            kline_time = pd.Timestamp(k["t"], unit="ms")
-                            self._process_kline_1m(
-                                symbol,
-                                float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]),
-                                float(k["v"]), kline_time,
-                            )
-                        except Exception as ke:
-                            logger.error(f"kline_1m error {symbol}: {ke}", exc_info=True)
+                        self._msg_queue.put((
+                            symbol,
+                            float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]),
+                            float(k["v"]), pd.Timestamp(k["t"], unit="ms"),
+                        ))
             except Exception as e:
                 logger.warning(f"WS parse error: {e}")
 
@@ -1503,6 +1397,12 @@ class VolumeBarsBot:
 
         def on_open(ws):
             self._ws_last_msg = time.time()
+            self._ws_last_kline = time.time()
+            self._ws_start_time = time.time()
+            if hasattr(self, '_1m_buffers'):
+                self._1m_buffers.clear()
+            nonlocal _backoff
+            _backoff = 3
             logger.info(f"WS connected: {len(self.pairs)} pairs (miniTicker + kline_1m)")
 
         def _watchdog():
@@ -1524,10 +1424,10 @@ class VolumeBarsBot:
                     except Exception:
                         pass
 
-        import threading
         wd = threading.Thread(target=_watchdog, daemon=True)
         wd.start()
 
+        _backoff = 3
         while True:
             try:
                 ws = websocket.WebSocketApp(
@@ -1536,10 +1436,12 @@ class VolumeBarsBot:
                 )
                 _ws_ref[0] = ws
                 ws.run_forever(ping_interval=10, ping_timeout=5)
+                _backoff = 3
             except Exception as e:
                 logger.error(f"WS fatal: {e}", exc_info=True)
-            logger.info("WS reconnecting in 3s...")
-            time.sleep(3)
+            logger.info(f"WS reconnecting in {_backoff}s...")
+            time.sleep(_backoff)
+            _backoff = min(_backoff * 2, 60)
 
     def _sl_monitor_poll(self):
         """Backup polling: runs when WS is dead, sleeps when WS is alive."""
@@ -1581,9 +1483,6 @@ class VolumeBarsBot:
     @staticmethod
     def _archive_logs():
         """Move old logs to archive folder on startup."""
-        import shutil
-        from datetime import datetime
-
         archive_dir = "logs_archive"
         os.makedirs(archive_dir, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1609,7 +1508,6 @@ class VolumeBarsBot:
             self.scan()
             return
 
-        import threading
         ws_thread = threading.Thread(target=self._sl_monitor_ws, daemon=True)
         ws_thread.start()
         poll_thread = threading.Thread(target=self._sl_monitor_poll, daemon=True)
