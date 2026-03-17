@@ -937,9 +937,9 @@ class VolumeBarsBot:
             except Exception as e:
                 logger.debug(f"  {symbol} ATR refresh error: {e}")
 
-            # 2. Fallback: if WS dead, do full volume bar update + signal check
-            ws_alive = (time.time() - self._ws_last_msg) < 120 if hasattr(self, '_ws_last_msg') else False
-            if not ws_alive:
+            # 2. Fallback: if kline_1m dead (>5 min), do full volume bar update + signal check
+            kline_alive = (time.time() - self._ws_last_kline) < 300 if hasattr(self, '_ws_last_kline') else False
+            if not kline_alive:
                 new_bar = self.update_volume_bars(symbol)
                 if new_bar:
                     self.vol_bar_counts[symbol] = self.vol_bar_counts.get(symbol, 0) + 1
@@ -1084,11 +1084,12 @@ class VolumeBarsBot:
 
         self.scan_count += 1
         ws_age = time.time() - self._ws_last_msg if hasattr(self, '_ws_last_msg') else 999
+        kl_age = time.time() - self._ws_last_kline if hasattr(self, '_ws_last_kline') else 999
         ws_status = "OK" if ws_age < 60 else f"DEAD ({ws_age:.0f}s)"
+        kl_status = "OK" if kl_age < 300 else f"DEAD ({kl_age:.0f}s)"
         k_count = getattr(self, '_kline_count', 0)
-        ws_types = getattr(self, '_ws_stream_types', {})
         logger.info(f"\n{'='*50}")
-        logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)} | WS: {ws_status} | K1m: {k_count} | Streams: {dict(ws_types)}")
+        logger.info(f"Scan #{self.scan_count} | Pos: {len(self.positions)} | WS: {ws_status} | Kline: {kl_status} | K1m: {k_count}")
 
         symbols = list(self.vol_bars.keys())
 
@@ -1446,6 +1447,7 @@ class VolumeBarsBot:
         url = f"wss://fstream.binance.com/stream?streams={streams}"
 
         self._ws_last_msg = time.time()
+        self._ws_last_kline = time.time()
         _ws_ref = [None]
 
         def on_message(ws, message):
@@ -1469,6 +1471,7 @@ class VolumeBarsBot:
                             self._process_price(symbol, price)
 
                 elif "@kline" in stream:
+                    self._ws_last_kline = time.time()
                     k = data.get("k", {})
                     if not k.get("x", False):
                         return
@@ -1501,12 +1504,19 @@ class VolumeBarsBot:
             logger.info(f"WS connected: {len(self.pairs)} pairs (miniTicker + kline_1m)")
 
         def _watchdog():
-            """Kill WS if no messages for 60 seconds."""
+            """Kill WS if no messages or no kline for too long."""
             while True:
                 time.sleep(5)
-                stale = time.time() - self._ws_last_msg
-                if stale > 15 and _ws_ref[0]:
-                    logger.warning(f"WS watchdog: no messages for {stale:.0f}s, forcing reconnect")
+                stale_msg = time.time() - self._ws_last_msg
+                stale_kline = time.time() - self._ws_last_kline
+                if stale_msg > 15 and _ws_ref[0]:
+                    logger.warning(f"WS watchdog: no messages for {stale_msg:.0f}s, forcing reconnect")
+                    try:
+                        _ws_ref[0].close()
+                    except Exception:
+                        pass
+                elif stale_kline > 300 and _ws_ref[0]:
+                    logger.warning(f"WS watchdog: no kline_1m for {stale_kline:.0f}s (miniTicker OK), forcing reconnect")
                     try:
                         _ws_ref[0].close()
                     except Exception:
