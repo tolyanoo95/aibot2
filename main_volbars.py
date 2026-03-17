@@ -86,6 +86,14 @@ WARMUP_DAYS = 60
 SCAN_INTERVAL = 900  # 15 minutes
 
 
+def _safe_reindex(source: pd.Series, target_idx: pd.Index) -> pd.Series:
+    """Reindex with ffill, sorting both source and target to avoid monotonic errors."""
+    try:
+        return source.sort_index().reindex(target_idx.sort_values(), method="ffill")
+    except ValueError:
+        return pd.Series(np.nan, index=target_idx)
+
+
 @dataclass
 class Position:
     symbol: str
@@ -263,18 +271,18 @@ class VolumeBarsBot:
                 htf_vdf = htf_vdf[~htf_vdf.index.duplicated(keep='last')]
                 for col in ["ema_9", "ema_21", "ema_50"]:
                     if col in htf_vdf.columns:
-                        vdf[f"htf_{col}"] = htf_vdf[col].reindex(vdf.index, method="ffill")
+                        vdf[f"htf_{col}"] = _safe_reindex(htf_vdf[col], vdf.index)
                 st = pta.supertrend(htf_vdf["high"], htf_vdf["low"], htf_vdf["close"], length=9, multiplier=3.0)
                 if st is not None:
                     for sc in st.columns:
                         if "SUPERTd" in sc:
-                            vdf["htf_supertrend"] = st[sc].reindex(vdf.index, method="ffill")
+                            vdf["htf_supertrend"] = _safe_reindex(st[sc], vdf.index)
                 self.htf_vol_bars[symbol] = htf_vdf
 
             vdf = self.indicators.calculate_all(vdf)
             vdf = vdf[~vdf.index.duplicated(keep='last')]
             tdf = tdf[~tdf.index.duplicated(keep='last')]
-            time_atr = tdf["atr"].reindex(vdf.index, method="ffill")
+            time_atr = _safe_reindex(tdf["atr"], vdf.index)
             vdf["atr"] = time_atr.values
 
             self.vol_bars[symbol] = vdf
@@ -321,7 +329,7 @@ class VolumeBarsBot:
                 vb_idx = self.vol_bars[symbol].index
                 td_idx = self.time_data[symbol].index
                 if len(vb_idx) > 0 and len(td_idx) > 0:
-                    time_atr = self.time_data[symbol]["atr"].reindex(vb_idx, method="ffill")
+                    time_atr = _safe_reindex(self.time_data[symbol]["atr"], vb_idx)
                     self.vol_bars[symbol]["atr"] = time_atr.values
 
             self._apply_htf_supertrend(symbol)
@@ -377,16 +385,14 @@ class VolumeBarsBot:
         vb_idx = self.vol_bars[symbol].sort_index().index
         for col in ["ema_9", "ema_21", "ema_50"]:
             if col in self.htf_vol_bars[symbol].columns:
-                self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(
-                    vb_idx, method="ffill").values
+                self.vol_bars[symbol][f"htf_{col}"] = _safe_reindex(self.htf_vol_bars[symbol][col], vb_idx).values
         htf_df = self.htf_vol_bars[symbol]
         if "high" in htf_df.columns and "low" in htf_df.columns:
             st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
             if st is not None:
                 for sc in st.columns:
                     if "SUPERTd" in sc:
-                        self.vol_bars[symbol]["htf_supertrend"] = st[sc].reindex(
-                            vb_idx, method="ffill").values
+                        self.vol_bars[symbol]["htf_supertrend"] = _safe_reindex(st[sc], vb_idx).values
 
     def _update_htf_bar(self, symbol, bar_open, bar_high, bar_low, bar_close, bar_vol, bar_start):
         """Update HTF volume bar accumulation. Must be called under _lock."""
@@ -876,8 +882,7 @@ class VolumeBarsBot:
                     with self._lock:
                         if symbol in self.vol_bars and symbol in self.time_data:
                             vb_sorted = self.vol_bars[symbol].sort_index()
-                            time_atr = self.time_data[symbol]["atr"].reindex(
-                                vb_sorted.index, method="ffill")
+                            time_atr = _safe_reindex(self.time_data[symbol]["atr"], vb_sorted.index)
                             self.vol_bars[symbol]["atr"] = time_atr.values
 
                 # Rolling threshold update (every 960 time bars)
@@ -1232,8 +1237,7 @@ class VolumeBarsBot:
                     self.time_data[symbol] = self.indicators.calculate_all(base.tail(1000))
                     if symbol in self.vol_bars:
                         vb_sorted = self.vol_bars[symbol].sort_index()
-                        time_atr = self.time_data[symbol]["atr"].reindex(
-                            vb_sorted.index, method="ffill")
+                        time_atr = _safe_reindex(self.time_data[symbol]["atr"], vb_sorted.index)
                         self.vol_bars[symbol]["atr"] = time_atr.values
                 if symbol in self.vol_history:
                     self.vol_history[symbol].append(mb["vol"])
@@ -1375,8 +1379,7 @@ class VolumeBarsBot:
                                 self.time_data[symbol] = self.indicators.calculate_all(base.tail(1000))
                                 if symbol in self.vol_bars:
                                     vb_sorted = self.vol_bars[symbol].sort_index()
-                                    time_atr = self.time_data[symbol]["atr"].reindex(
-                                        vb_sorted.index, method="ffill")
+                                    time_atr = _safe_reindex(self.time_data[symbol]["atr"], vb_sorted.index)
                                     self.vol_bars[symbol]["atr"] = time_atr.values
                             if symbol in self.vol_history:
                                 self.vol_history[symbol].append(mb["vol"])
