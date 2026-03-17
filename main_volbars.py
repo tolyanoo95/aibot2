@@ -1085,8 +1085,9 @@ class VolumeBarsBot:
         self.scan_count += 1
         ws_age = time.time() - self._ws_last_msg if hasattr(self, '_ws_last_msg') else 999
         ws_status = "OK" if ws_age < 60 else f"DEAD ({ws_age:.0f}s)"
+        k_count = getattr(self, '_kline_count', 0)
         logger.info(f"\n{'='*50}")
-        logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)} | WS: {ws_status}")
+        logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)} | WS: {ws_status} | K1m: {k_count}")
 
         symbols = list(self.vol_bars.keys())
 
@@ -1461,21 +1462,27 @@ class VolumeBarsBot:
                         if symbol:
                             self._process_price(symbol, price)
 
-                elif "@kline_1m" in stream:
+                elif "@kline" in stream:
                     k = data.get("k", {})
                     if not k.get("x", False):
                         return
                     sym_raw = k.get("s", "")
                     symbol = ws_to_pair.get(sym_raw)
                     if symbol:
-                        kline_time = pd.Timestamp(k["t"], unit="ms")
-                        self._process_kline_1m(
-                            symbol,
-                            float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]),
-                            float(k["v"]), kline_time,
-                        )
+                        if not hasattr(self, '_kline_count'):
+                            self._kline_count = 0
+                        self._kline_count += 1
+                        try:
+                            kline_time = pd.Timestamp(k["t"], unit="ms")
+                            self._process_kline_1m(
+                                symbol,
+                                float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]),
+                                float(k["v"]), kline_time,
+                            )
+                        except Exception as ke:
+                            logger.error(f"kline_1m error {symbol}: {ke}", exc_info=True)
             except Exception as e:
-                logger.debug(f"WS parse error: {e}")
+                logger.warning(f"WS parse error: {e}")
 
         def on_error(ws, error):
             logger.warning(f"WS error: {error}")
