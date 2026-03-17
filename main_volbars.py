@@ -901,7 +901,7 @@ class VolumeBarsBot:
                 self._log_dca_entry(pos, price, signal)
 
     def _process_pair(self, symbol: str):
-        """15m scan: ATR refresh + position management. Signal generation moved to WebSocket."""
+        """15m scan: ATR refresh + position management. Full signal if WS is dead."""
         try:
             # 1. Refresh time data (ATR) from latest 15m candle
             try:
@@ -935,7 +935,20 @@ class VolumeBarsBot:
             except Exception as e:
                 logger.debug(f"  {symbol} ATR refresh error: {e}")
 
-            # 2. Position management (SL/TP/vol_drop/timeout using bar high/low)
+            # 2. Fallback: if WS dead, do full volume bar update + signal check
+            ws_alive = (time.time() - self._ws_last_msg) < 120 if hasattr(self, '_ws_last_msg') else False
+            if not ws_alive:
+                new_bar = self.update_volume_bars(symbol)
+                if new_bar:
+                    self.vol_bar_counts[symbol] = self.vol_bar_counts.get(symbol, 0) + 1
+                    self._try_dca(symbol)
+                    signal = self.check_signal(symbol)
+                    if signal:
+                        logger.info(f"  FALLBACK_SIGNAL: {signal['direction']} {signal['symbol']} @ {_pfmt(signal['price'])} roc={signal['roc_12']:.2f}%")
+                        with self._lock:
+                            self.open_position(signal)
+
+            # 3. Position management (SL/TP/vol_drop/timeout)
             self._check_pair_positions(symbol, new_bar_closed=False)
 
         except Exception as e:
@@ -1067,8 +1080,10 @@ class VolumeBarsBot:
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         self.scan_count += 1
+        ws_age = time.time() - self._ws_last_msg if hasattr(self, '_ws_last_msg') else 999
+        ws_status = "OK" if ws_age < 60 else f"DEAD ({ws_age:.0f}s)"
         logger.info(f"\n{'='*50}")
-        logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)}")
+        logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)} | WS: {ws_status}")
 
         symbols = list(self.vol_bars.keys())
 
@@ -1423,7 +1438,11 @@ class VolumeBarsBot:
         streams = "/".join(stream_parts)
         url = f"wss://fstream.binance.com/stream?streams={streams}"
 
+        self._ws_last_msg = time.time()
+        _ws_ref = [None]
+
         def on_message(ws, message):
+            self._ws_last_msg = time.time()
             try:
                 msg = json.loads(message)
                 stream = msg.get("stream", "")
@@ -1445,17 +1464,10 @@ class VolumeBarsBot:
                     symbol = ws_to_pair.get(sym_raw)
                     if symbol:
                         kline_time = pd.Timestamp(k["t"], unit="ms")
-                        vol_1m = float(k["v"])
-                        buf = self.vol_buffers.get(symbol, {})
-                        cum = buf.get("cum_vol", 0)
-                        thr = self.vol_thresholds.get(symbol, 0)
-                        pct = (cum + vol_1m) / thr * 100 if thr > 0 else 0
-                        if sym_raw == "BTCUSDT":
-                            logger.info(f"  K1M {symbol} vol={vol_1m:.0f} cum={cum+vol_1m:.0f}/{thr:.0f} ({pct:.0f}%)")
                         self._process_kline_1m(
                             symbol,
                             float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]),
-                            vol_1m, kline_time,
+                            float(k["v"]), kline_time,
                         )
             except Exception as e:
                 logger.debug(f"WS parse error: {e}")
@@ -1467,7 +1479,24 @@ class VolumeBarsBot:
             logger.warning(f"WS closed: {close_status} {close_msg}")
 
         def on_open(ws):
+            self._ws_last_msg = time.time()
             logger.info(f"WS connected: {len(self.pairs)} pairs (miniTicker + kline_1m)")
+
+        def _watchdog():
+            """Kill WS if no messages for 60 seconds."""
+            while True:
+                time.sleep(30)
+                stale = time.time() - self._ws_last_msg
+                if stale > 60 and _ws_ref[0]:
+                    logger.warning(f"WS watchdog: no messages for {stale:.0f}s, forcing reconnect")
+                    try:
+                        _ws_ref[0].close()
+                    except Exception:
+                        pass
+
+        import threading
+        wd = threading.Thread(target=_watchdog, daemon=True)
+        wd.start()
 
         while True:
             try:
@@ -1475,11 +1504,12 @@ class VolumeBarsBot:
                     url, on_message=on_message, on_error=on_error,
                     on_close=on_close, on_open=on_open,
                 )
-                ws.run_forever(ping_interval=30, ping_timeout=10)
+                _ws_ref[0] = ws
+                ws.run_forever(ping_interval=20, ping_timeout=10)
             except Exception as e:
                 logger.error(f"WS fatal: {e}")
-            logger.info("WS reconnecting in 5s...")
-            time.sleep(5)
+            logger.info("WS reconnecting in 3s...")
+            time.sleep(3)
 
     def _sl_monitor_poll(self):
         """Fallback polling SL monitor if WebSocket unavailable."""
