@@ -1086,8 +1086,9 @@ class VolumeBarsBot:
         ws_age = time.time() - self._ws_last_msg if hasattr(self, '_ws_last_msg') else 999
         ws_status = "OK" if ws_age < 60 else f"DEAD ({ws_age:.0f}s)"
         k_count = getattr(self, '_kline_count', 0)
+        ws_types = getattr(self, '_ws_stream_types', {})
         logger.info(f"\n{'='*50}")
-        logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)} | WS: {ws_status} | K1m: {k_count}")
+        logger.info(f"Scan #{self.scan_count} | Positions: {len(self.positions)} | WS: {ws_status} | K1m: {k_count} | Streams: {dict(ws_types)}")
 
         symbols = list(self.vol_bars.keys())
 
@@ -1453,6 +1454,11 @@ class VolumeBarsBot:
                 msg = json.loads(message)
                 stream = msg.get("stream", "")
                 data = msg.get("data", {})
+
+                if not hasattr(self, '_ws_stream_types'):
+                    self._ws_stream_types = {}
+                stype = stream.split("@")[-1] if "@" in stream else stream
+                self._ws_stream_types[stype] = self._ws_stream_types.get(stype, 0) + 1
 
                 if "@miniTicker" in stream:
                     sym_raw = data.get("s", "")
