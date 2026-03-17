@@ -1485,9 +1485,9 @@ class VolumeBarsBot:
         def _watchdog():
             """Kill WS if no messages for 60 seconds."""
             while True:
-                time.sleep(30)
+                time.sleep(5)
                 stale = time.time() - self._ws_last_msg
-                if stale > 60 and _ws_ref[0]:
+                if stale > 15 and _ws_ref[0]:
                     logger.warning(f"WS watchdog: no messages for {stale:.0f}s, forcing reconnect")
                     try:
                         _ws_ref[0].close()
@@ -1505,7 +1505,7 @@ class VolumeBarsBot:
                     on_close=on_close, on_open=on_open,
                 )
                 _ws_ref[0] = ws
-                ws.run_forever(ping_interval=20, ping_timeout=10)
+                ws.run_forever(ping_interval=10, ping_timeout=5)
             except Exception as e:
                 logger.error(f"WS fatal: {e}")
             logger.info("WS reconnecting in 3s...")
