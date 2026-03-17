@@ -1445,10 +1445,17 @@ class VolumeBarsBot:
                     symbol = ws_to_pair.get(sym_raw)
                     if symbol:
                         kline_time = pd.Timestamp(k["t"], unit="ms")
+                        vol_1m = float(k["v"])
+                        buf = self.vol_buffers.get(symbol, {})
+                        cum = buf.get("cum_vol", 0)
+                        thr = self.vol_thresholds.get(symbol, 0)
+                        pct = (cum + vol_1m) / thr * 100 if thr > 0 else 0
+                        if sym_raw == "BTCUSDT":
+                            logger.info(f"  K1M {symbol} vol={vol_1m:.0f} cum={cum+vol_1m:.0f}/{thr:.0f} ({pct:.0f}%)")
                         self._process_kline_1m(
                             symbol,
                             float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]),
-                            float(k["v"]), kline_time,
+                            vol_1m, kline_time,
                         )
             except Exception as e:
                 logger.debug(f"WS parse error: {e}")
