@@ -1319,6 +1319,7 @@ class VolumeBarsBot:
 
                 price = float(data.get("p", 0))
                 qty = float(data.get("q", 0))
+                trade_ts = pd.Timestamp(int(data.get("T", 0)), unit="ms")
                 if price <= 0 or qty <= 0:
                     return
 
@@ -1336,7 +1337,7 @@ class VolumeBarsBot:
                             buf["bar_open"] = price
                             buf["bar_high"] = price
                             buf["bar_low"] = price
-                            buf["bar_start"] = pd.Timestamp.now()
+                            buf["bar_start"] = trade_ts
                         buf["bar_high"] = max(buf["bar_high"], price)
                         buf["bar_low"] = min(buf["bar_low"], price)
                         buf["cum_vol"] += qty
@@ -1365,7 +1366,7 @@ class VolumeBarsBot:
                         bar_15m = pd.DataFrame([{
                             "open": mb["open"], "high": mb["high"], "low": mb["low"],
                             "close": mb["close"], "volume": mb["vol"],
-                        }], index=[pd.Timestamp.now()])
+                        }], index=[trade_ts])
                         with self._lock:
                             if symbol in self.time_data:
                                 base = self.time_data[symbol][["open", "high", "low", "close", "volume"]]
