@@ -875,8 +875,9 @@ class VolumeBarsBot:
 
                     with self._lock:
                         if symbol in self.vol_bars and symbol in self.time_data:
+                            vb_sorted = self.vol_bars[symbol].sort_index()
                             time_atr = self.time_data[symbol]["atr"].reindex(
-                                self.vol_bars[symbol].index, method="ffill")
+                                vb_sorted.index, method="ffill")
                             self.vol_bars[symbol]["atr"] = time_atr.values
 
                 # Rolling threshold update (every 960 time bars)
@@ -1230,8 +1231,9 @@ class VolumeBarsBot:
                     base = base[~base.index.duplicated(keep='last')]
                     self.time_data[symbol] = self.indicators.calculate_all(base.tail(1000))
                     if symbol in self.vol_bars:
+                        vb_sorted = self.vol_bars[symbol].sort_index()
                         time_atr = self.time_data[symbol]["atr"].reindex(
-                            self.vol_bars[symbol].index, method="ffill")
+                            vb_sorted.index, method="ffill")
                         self.vol_bars[symbol]["atr"] = time_atr.values
                 if symbol in self.vol_history:
                     self.vol_history[symbol].append(mb["vol"])
@@ -1371,8 +1373,9 @@ class VolumeBarsBot:
                                 base = base[~base.index.duplicated(keep='last')]
                                 self.time_data[symbol] = self.indicators.calculate_all(base.tail(1000))
                                 if symbol in self.vol_bars:
+                                    vb_sorted = self.vol_bars[symbol].sort_index()
                                     time_atr = self.time_data[symbol]["atr"].reindex(
-                                        self.vol_bars[symbol].index, method="ffill")
+                                        vb_sorted.index, method="ffill")
                                     self.vol_bars[symbol]["atr"] = time_atr.values
                             if symbol in self.vol_history:
                                 self.vol_history[symbol].append(mb["vol"])
