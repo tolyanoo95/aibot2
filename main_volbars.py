@@ -313,14 +313,16 @@ class VolumeBarsBot:
         with self._lock:
             vb_base = self.vol_bars[symbol][["open", "high", "low", "close", "volume"]]
             vb_base = pd.concat([vb_base, new_bar])
-            vb_base = vb_base[~vb_base.index.duplicated(keep='last')]
+            vb_base = vb_base[~vb_base.index.duplicated(keep='last')].sort_index()
             self.vol_bars[symbol] = self.indicators.calculate_all(vb_base.tail(1000))
-            self.vol_bars[symbol] = self.vol_bars[symbol][~self.vol_bars[symbol].index.duplicated(keep='last')]
+            self.vol_bars[symbol] = self.vol_bars[symbol][~self.vol_bars[symbol].index.duplicated(keep='last')].sort_index()
 
             if symbol in self.time_data:
-                time_atr = self.time_data[symbol]["atr"].reindex(
-                    self.vol_bars[symbol].index, method="ffill")
-                self.vol_bars[symbol]["atr"] = time_atr.values
+                vb_idx = self.vol_bars[symbol].index
+                td_idx = self.time_data[symbol].index
+                if len(vb_idx) > 0 and len(td_idx) > 0:
+                    time_atr = self.time_data[symbol]["atr"].reindex(vb_idx, method="ffill")
+                    self.vol_bars[symbol]["atr"] = time_atr.values
 
             self._apply_htf_supertrend(symbol)
             self._update_htf_bar(symbol, bar_open, bar_high, bar_low, bar_close, bar_vol, bar_start)
@@ -372,10 +374,11 @@ class VolumeBarsBot:
         """Re-apply HTF Supertrend to vol_bars. Must be called under _lock."""
         if symbol not in self.htf_vol_bars:
             return
+        vb_idx = self.vol_bars[symbol].sort_index().index
         for col in ["ema_9", "ema_21", "ema_50"]:
             if col in self.htf_vol_bars[symbol].columns:
                 self.vol_bars[symbol][f"htf_{col}"] = self.htf_vol_bars[symbol][col].reindex(
-                    self.vol_bars[symbol].index, method="ffill")
+                    vb_idx, method="ffill").values
         htf_df = self.htf_vol_bars[symbol]
         if "high" in htf_df.columns and "low" in htf_df.columns:
             st = pta.supertrend(htf_df["high"], htf_df["low"], htf_df["close"], length=9, multiplier=3.0)
@@ -383,7 +386,7 @@ class VolumeBarsBot:
                 for sc in st.columns:
                     if "SUPERTd" in sc:
                         self.vol_bars[symbol]["htf_supertrend"] = st[sc].reindex(
-                            self.vol_bars[symbol].index, method="ffill")
+                            vb_idx, method="ffill").values
 
     def _update_htf_bar(self, symbol, bar_open, bar_high, bar_low, bar_close, bar_vol, bar_start):
         """Update HTF volume bar accumulation. Must be called under _lock."""
