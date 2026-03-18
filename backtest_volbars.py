@@ -419,7 +419,7 @@ def run_backtest(
     timeout = sum(1 for t in all_trades if t.exit_reason in ("TIMEOUT", "END"))
 
     pos_size = 1000 * 5 / max_open
-    fee_per_trade = 2 * pos_size * 0.0002
+    fee_per_trade = pos_size * (0.0002 + 0.0005)  # maker entry 0.02% + taker exit 0.05%
     total_fees = fee_per_trade * n
     gross = pos_size * total_pnl / 100
     net = gross - total_fees
