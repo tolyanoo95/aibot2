@@ -126,7 +126,8 @@ def run_test(data, sl_mult=2.0, tp_mult=4.0, train_bars=1000, test_bars=300):
     total_pnl = sum(t.pnl_pct for t in all_trades)
     wr = sum(1 for t in all_trades if t.pnl_pct > 0) / n * 100
     pos_size = 1000 * 5 / 11
-    net = pos_size * total_pnl / 100 - pos_size * (0.0002 + 0.0005) * n  # maker 0.02% + taker 0.05%
+    total_fees = sum(pos_size * (0.0002 * getattr(t, 'total_size', 1) + 0.0005 * getattr(t, 'total_size', 1)) for t in all_trades)
+    net = pos_size * total_pnl / 100 - total_fees
     tp = sum(1 for t in all_trades if t.exit_reason == "TP")
     sl = sum(1 for t in all_trades if t.exit_reason in ("SL", "HARD_SL"))
     sl_moved = sum(1 for t in all_trades if t.exit_reason == "SL_MOVED")

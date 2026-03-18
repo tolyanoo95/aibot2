@@ -419,8 +419,12 @@ def run_backtest(
     timeout = sum(1 for t in all_trades if t.exit_reason in ("TIMEOUT", "END"))
 
     pos_size = 1000 * 5 / max_open
-    fee_per_trade = pos_size * (0.0002 + 0.0005)  # maker entry 0.02% + taker exit 0.05%
-    total_fees = fee_per_trade * n
+    # DCA-aware fees: each entry = maker 0.02%, exit = taker 0.05% on full size
+    total_fees = sum(
+        pos_size * (0.0002 * getattr(t, 'total_size', 1) + 0.0005 * getattr(t, 'total_size', 1))
+        for t in all_trades
+    )
+    fee_per_trade = total_fees / n if n > 0 else 0
     gross = pos_size * total_pnl / 100
     net = gross - total_fees
     days = total_days
