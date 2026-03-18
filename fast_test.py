@@ -28,8 +28,8 @@ CACHE_FILE = "data/ohlcv_cache_15m.pkl"
 ADX_MIN = 20
 LONG_MOM = 0.30
 SHORT_MOM = 0.10
-MOVE_SL_STEPS = [(0.05, 0.05), (0.25, 0.15), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]
-MOVE_SL_TRAIL = 1.0
+MOVE_SL_STEPS = []  # no Move SL — backtest shows +4x NET without it
+MOVE_SL_TRAIL = 0.0
 
 
 def load_and_prepare():
@@ -114,7 +114,8 @@ def run_test(data, sl_mult=2.0, tp_mult=4.0, train_bars=1000, test_bars=300):
                 df_test, signals, tp_mult=tp_mult, dca_step_mult=1.0,
                 max_entries=3, hard_sl_mult=sl_mult, max_hold=24,
                 max_open=11, cooldown=3, threshold=0.10, full_size_dca=True,
-                move_sl_at=MOVE_SL_STEPS[0][0], move_sl_to=MOVE_SL_STEPS[0][1],
+                move_sl_at=MOVE_SL_STEPS[0][0] if MOVE_SL_STEPS else 0,
+                move_sl_to=MOVE_SL_STEPS[0][1] if MOVE_SL_STEPS else 0,
                 move_sl_steps=MOVE_SL_STEPS, move_sl_trail=MOVE_SL_TRAIL,
             )
             all_trades.extend(trades)
@@ -138,7 +139,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sl", type=float, default=0, help="Single SL test")
     parser.add_argument("--tp", type=float, default=0, help="Single TP test")
+    parser.add_argument("--move-sl", action="store_true", help="Enable 4-step Move SL (default: off)")
     args = parser.parse_args()
+
+    if args.move_sl:
+        MOVE_SL_STEPS[:] = [(0.25, 0.30), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]
+        MOVE_SL_TRAIL = 1.0
 
     data = load_and_prepare()
 

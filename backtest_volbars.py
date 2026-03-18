@@ -37,8 +37,8 @@ console = Console()
 ADX_MIN = 20
 LONG_MOM = 0.30
 SHORT_MOM = 0.10
-MOVE_SL_STEPS = [(0.05, 0.05), (0.25, 0.15), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]
-MOVE_SL_TRAIL = 1.0
+MOVE_SL_STEPS = []  # no Move SL — backtest shows +4x NET without it
+MOVE_SL_TRAIL = 0.0
 
 
 def resample_to_volume_bars(df: pd.DataFrame, initial_threshold: float = None,
@@ -239,7 +239,8 @@ def run_backtest(
                     df_test, signals, tp_mult=tp_mult, dca_step_mult=1.0,
                     max_entries=3, hard_sl_mult=sl_mult, max_hold=24,
                     max_open=11, cooldown=3, threshold=0.10, full_size_dca=True,
-                    move_sl_at=MOVE_SL_STEPS[0][0], move_sl_to=MOVE_SL_STEPS[0][1],
+                    move_sl_at=MOVE_SL_STEPS[0][0] if MOVE_SL_STEPS else 0,
+                    move_sl_to=MOVE_SL_STEPS[0][1] if MOVE_SL_STEPS else 0,
                     move_sl_steps=MOVE_SL_STEPS, move_sl_trail=MOVE_SL_TRAIL,
                 )
                 fold_trades.extend(trades)
@@ -505,7 +506,13 @@ if __name__ == "__main__":
     parser.add_argument("--no-guards", action="store_true", help="Disable ADX/RSI/ATR guards (HTF+ROC only)")
     parser.add_argument("--rank", type=str, default="alphabetical", choices=["alphabetical", "roc", "adx", "roc_adx"],
                         help="Signal ranking for global mode (default: alphabetical)")
+    parser.add_argument("--move-sl", action="store_true",
+                        help="Enable 4-step Move SL (default: off)")
     args = parser.parse_args()
+
+    if args.move_sl:
+        MOVE_SL_STEPS[:] = [(0.25, 0.30), (0.5, 0.25), (1.0, 0.5), (2.0, 1.0)]
+        MOVE_SL_TRAIL = 1.0
 
     run_backtest(
         total_days=args.days, train_bars=args.train_bars,
