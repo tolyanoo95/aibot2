@@ -852,6 +852,88 @@ class VolumeBarsBot:
             if len(dh) >= 2:
                 depth_vel = dh[-1] - dh[0]
 
+        # 34. Whale trade (single trade > 10x median in last 20)
+        if sizes:
+            med_size = sorted(sizes)[len(sizes)//2]
+            whale = any(s > med_size * 10 for s in sizes) if med_size > 0 else False
+        else:
+            whale = False
+
+        # 35. Reversal count (how many times price changed direction in last 20)
+        if len(recent20) >= 3:
+            dirs = [1 if recent20[i+1]["price"] > recent20[i]["price"] else -1
+                    for i in range(len(recent20)-1) if recent20[i+1]["price"] != recent20[i]["price"]]
+            reversals = sum(1 for i in range(len(dirs)-1) if dirs[i] != dirs[i+1]) if len(dirs) >= 2 else 0
+        else:
+            reversals = 0
+
+        # 36. Aggressor exhaustion (volume dropped >50% after burst)
+        if len(trades) >= 10:
+            vol_last5 = sum(t["qty"] for t in list(trades)[-5:])
+            vol_prev5 = sum(t["qty"] for t in list(trades)[-10:-5])
+            exhaustion = vol_last5 < vol_prev5 * 0.5 if vol_prev5 > 0 else False
+        else:
+            exhaustion = False
+
+        # 37. Trade gap (seconds since last trade)
+        if len(trades) >= 2:
+            trade_gap = now - list(trades)[-1]["ts"]
+        else:
+            trade_gap = 0
+
+        # 38. Microprice (fair price estimate from bookTicker)
+        microprice_delta = 0
+        if spread_data and spread_data.get("bid_qty", 0) > 0:
+            bid_p = spread_data.get("bid", 0)
+            ask_p = spread_data.get("ask", 0)
+            bid_q = spread_data.get("bid_qty", 0)
+            ask_q = spread_data.get("ask_qty", 0)
+            if bid_q + ask_q > 0:
+                microprice = (bid_p * ask_q + ask_p * bid_q) / (bid_q + ask_q)
+                mid = (bid_p + ask_p) / 2
+                microprice_delta = (microprice - mid) / atr_val if atr_val > 0 else 0
+
+        # 39. Spread stability (std of spread over last 20 bookTicker updates)
+        spread_std = 0
+        if hasattr(self, '_spread_history') and symbol in self._spread_history:
+            sh = list(self._spread_history[symbol])
+            if len(sh) >= 3:
+                mean_s = sum(sh) / len(sh)
+                spread_std = (sum((s - mean_s)**2 for s in sh) / len(sh)) ** 0.5
+
+        # 40. Quote imbalance trend (bid_qty/ask_qty changing?)
+        qi_trend = 0
+        if hasattr(self, '_qi_history') and symbol in self._qi_history:
+            qh = list(self._qi_history[symbol])
+            if len(qh) >= 2:
+                qi_trend = qh[-1] - qh[0]
+        if spread_data and spread_data.get("ask_qty", 0) > 0:
+            qi = spread_data.get("bid_qty", 0) / spread_data.get("ask_qty", 1)
+            if not hasattr(self, '_qi_history'):
+                self._qi_history = {}
+            import collections as _col
+            if symbol not in self._qi_history:
+                self._qi_history[symbol] = _col.deque(maxlen=20)
+            self._qi_history[symbol].append(qi)
+
+        # 41. Disappearing liquidity (depth dropped >50% recently)
+        disappearing_liq = False
+        if hasattr(self, '_depth_history') and symbol in self._depth_history:
+            dh = list(self._depth_history[symbol])
+            if len(dh) >= 3 and dh[0] > 0:
+                disappearing_liq = dh[-1] < dh[0] * 0.5
+
+        # 42. Book skewness (deep levels bid vs ask volume ratio)
+        book_skew = 0
+        if hasattr(self, '_depth') and symbol in self._depth:
+            dd = self._depth[symbol]
+            br = dd.get("bids_raw", [])
+            ar = dd.get("asks_raw", [])
+            if len(br) >= 3 and len(ar) >= 3:
+                deep_bid = sum(br[2:])
+                deep_ask = sum(ar[2:])
+                book_skew = (deep_bid - deep_ask) / (deep_bid + deep_ask) * 100 if (deep_bid + deep_ask) > 0 else 0
+
         logger.info(
             f"  SIGNAL_DATA {direction} {symbol} "
             f"tick_mom={tick_mom:.0f}% "
@@ -888,7 +970,16 @@ class VolumeBarsBot:
             f"tot_depth={total_depth:.1f} "
             f"d_grad={depth_gradient:.2f} "
             f"wall_dist={wall_dist:.1f} "
-            f"d_vel={depth_vel:+.1f}"
+            f"d_vel={depth_vel:+.1f} "
+            f"whale={whale} "
+            f"reversals={reversals} "
+            f"exhaustion={exhaustion} "
+            f"trade_gap={trade_gap:.2f}s "
+            f"microprice={microprice_delta:+.4f} "
+            f"spr_std={spread_std:.4f} "
+            f"qi_trend={qi_trend:+.2f} "
+            f"disap_liq={disappearing_liq} "
+            f"book_skew={book_skew:+.1f}%"
         )
 
     def open_position(self, signal: dict):
