@@ -596,8 +596,203 @@ class VolumeBarsBot:
             "roc_12": roc_12,
         }
 
+    def _log_signal_metrics(self, signal: dict):
+        """Log all tick-level metrics at signal time (no filtering)."""
+        import numpy as np
+        symbol = signal["symbol"]
+        direction = signal["direction"]
+        atr_val = signal.get("atr", 1)
+        trades = list(getattr(self, '_recent_trades', {}).get(symbol, []))
+        if len(trades) < 5:
+            return
+
+        now = time.time()
+
+        # 1. Tick momentum (% aligned with direction)
+        recent20 = trades[-20:]
+        if direction == "SHORT":
+            tick_mom = sum(1 for t in recent20 if t["is_sell"]) / len(recent20) * 100
+        else:
+            tick_mom = sum(1 for t in recent20 if not t["is_sell"]) / len(recent20) * 100
+
+        # 2. Price velocity (price change over last 1 sec in ATR)
+        recent_1s = [t for t in trades if now - t["ts"] <= 1.0]
+        if len(recent_1s) >= 2:
+            velocity = (recent_1s[-1]["price"] - recent_1s[0]["price"]) / atr_val
+        else:
+            velocity = 0
+
+        # 3. Volume burst (volume last 3s vs average)
+        recent_3s = [t for t in trades if now - t["ts"] <= 3.0]
+        recent_30s = [t for t in trades if now - t["ts"] <= 30.0]
+        vol_3s = sum(t["qty"] for t in recent_3s)
+        vol_30s = sum(t["qty"] for t in recent_30s)
+        vol_burst = vol_3s / (vol_30s / 10) if vol_30s > 0 else 1.0
+
+        # 4. Consecutive same-direction trades
+        consec = 0
+        for t in reversed(trades):
+            if direction == "SHORT" and t["is_sell"]:
+                consec += 1
+            elif direction == "LONG" and not t["is_sell"]:
+                consec += 1
+            else:
+                break
+
+        # 5. Tick volatility (std of price changes over last 1 sec)
+        if len(recent_1s) >= 3:
+            prices = [t["price"] for t in recent_1s]
+            changes = [abs(prices[i+1] - prices[i]) for i in range(len(prices)-1)]
+            tick_vol = sum(changes) / len(changes) / atr_val if atr_val > 0 else 0
+        else:
+            tick_vol = 0
+
+        # 6. Trade size analysis
+        sizes = [t["qty"] for t in recent20]
+        avg_size = sum(sizes) / len(sizes) if sizes else 0
+        median_size = sorted(sizes)[len(sizes)//2] if sizes else 0
+        large_pct = sum(1 for s in sizes if s > median_size * 3) / len(sizes) * 100 if sizes else 0
+
+        # 7. Entry delay simulation (price 3s ago vs now)
+        trades_3s_ago = [t for t in trades if now - t["ts"] >= 2.5 and now - t["ts"] <= 3.5]
+        if trades_3s_ago:
+            price_3s = trades_3s_ago[0]["price"]
+            delay_ok = (direction == "LONG" and signal["price"] >= price_3s) or \
+                       (direction == "SHORT" and signal["price"] <= price_3s)
+        else:
+            price_3s = 0
+            delay_ok = True
+
+        # 8. Sweep detection (5+ consecutive same-side through 3+ price levels in <500ms)
+        sweep_dir = None
+        sweep_vol = 0
+        recent_500ms = [t for t in trades if now - t["ts"] <= 0.5]
+        if len(recent_500ms) >= 5:
+            buy_run = 0; sell_run = 0; buy_prices = set(); sell_prices = set()
+            buy_vol = 0; sell_vol = 0
+            for t in recent_500ms:
+                if not t["is_sell"]:
+                    buy_run += 1; buy_prices.add(round(t["price"], 6)); buy_vol += t["qty"]
+                else:
+                    buy_run = 0; buy_prices = set(); buy_vol = 0
+                if t["is_sell"]:
+                    sell_run += 1; sell_prices.add(round(t["price"], 6)); sell_vol += t["qty"]
+                else:
+                    sell_run = 0; sell_prices = set(); sell_vol = 0
+            if buy_run >= 5 and len(buy_prices) >= 3:
+                sweep_dir = "BUY"
+                sweep_vol = buy_vol
+            elif sell_run >= 5 and len(sell_prices) >= 3:
+                sweep_dir = "SELL"
+                sweep_vol = sell_vol
+
+        sweep_aligned = (sweep_dir == "BUY" and direction == "LONG") or \
+                        (sweep_dir == "SELL" and direction == "SHORT")
+        sweep_str = f"{sweep_dir}({sweep_vol:.2f})" if sweep_dir else "none"
+
+        # 9. Spread
+        spread_data = getattr(self, '_spreads', {}).get(symbol, {})
+        spread_pct = spread_data.get("spread_pct", 0)
+
+        # 10. Volume-weighted imbalance (buy$ vs sell$)
+        buy_vol = sum(t["price"] * t["qty"] for t in recent20 if not t["is_sell"])
+        sell_vol = sum(t["price"] * t["qty"] for t in recent20 if t["is_sell"])
+        total_vol_dollar = buy_vol + sell_vol
+        vol_imbalance = (buy_vol - sell_vol) / total_vol_dollar * 100 if total_vol_dollar > 0 else 0
+
+        # 11. VWAP distance (entry vs volume-weighted avg price)
+        vwap_vol = sum(t["qty"] for t in recent20)
+        vwap = sum(t["price"] * t["qty"] for t in recent20) / vwap_vol if vwap_vol > 0 else signal["price"]
+        vwap_dist = (signal["price"] - vwap) / atr_val if atr_val > 0 else 0
+
+        # 12. Price impact (price change per unit volume over last 20 trades)
+        if len(recent20) >= 2 and atr_val > 0:
+            price_change = abs(recent20[-1]["price"] - recent20[0]["price"])
+            total_qty = sum(t["qty"] for t in recent20)
+            price_impact = (price_change / total_qty) if total_qty > 0 else 0
+            price_impact_norm = price_impact / atr_val * 1000
+        else:
+            price_impact_norm = 0
+
+        # 13. Trade frequency (trades per second over last 3 sec)
+        recent_3s_count = len([t for t in trades if now - t["ts"] <= 3.0])
+        trade_freq = recent_3s_count / 3.0
+
+        # 14. Trade clustering CV (coefficient of variation of inter-arrival times)
+        if len(recent20) >= 5:
+            arrivals = [recent20[i+1]["ts"] - recent20[i]["ts"] for i in range(len(recent20)-1)]
+            arrivals = [a for a in arrivals if a > 0]
+            if arrivals and len(arrivals) >= 3:
+                mean_iat = sum(arrivals) / len(arrivals)
+                std_iat = (sum((a - mean_iat)**2 for a in arrivals) / len(arrivals)) ** 0.5
+                clustering_cv = std_iat / mean_iat if mean_iat > 0 else 1.0
+            else:
+                clustering_cv = 1.0
+        else:
+            clustering_cv = 1.0
+
+        # 15. CVD (Cumulative Volume Delta over last 50 trades)
+        all_recent = list(trades)[-50:]
+        cvd = sum(t["qty"] if not t["is_sell"] else -t["qty"] for t in all_recent)
+        # CVD direction vs price direction
+        price_dir = 1 if len(all_recent) >= 2 and all_recent[-1]["price"] > all_recent[0]["price"] else -1
+        cvd_dir = 1 if cvd > 0 else -1
+        cvd_divergence = cvd_dir != price_dir
+
+        # 16. Price efficiency (net / gross movement)
+        if len(recent20) >= 3:
+            prices_list = [t["price"] for t in recent20]
+            net_move = abs(prices_list[-1] - prices_list[0])
+            gross_move = sum(abs(prices_list[i+1] - prices_list[i]) for i in range(len(prices_list)-1))
+            price_efficiency = net_move / gross_move if gross_move > 0 else 0
+        else:
+            price_efficiency = 0
+
+        # 17. Dollar volume per trade (avg)
+        dollar_per_trade = total_vol_dollar / len(recent20) if recent20 else 0
+
+        # 18.5 Order book depth (top 5 levels)
+        depth_data = getattr(self, '_depth', {}).get(symbol, {})
+        depth_imb = depth_data.get("imbalance", 0)
+        depth_bid_wall = depth_data.get("bid_wall", False)
+        depth_ask_wall = depth_data.get("ask_wall", False)
+
+        # 18. Trade acceleration (freq last 1s vs freq 3-4s ago)
+        freq_now = len([t for t in trades if now - t["ts"] <= 1.0])
+        freq_before = len([t for t in trades if 3.0 <= now - t["ts"] <= 4.0])
+        trade_accel = freq_now - freq_before
+
+        logger.info(
+            f"  SIGNAL_DATA {direction} {symbol} "
+            f"tick_mom={tick_mom:.0f}% "
+            f"velocity={velocity:+.4f} "
+            f"vol_burst={vol_burst:.1f}x "
+            f"consec={consec} "
+            f"tick_vol={tick_vol:.4f} "
+            f"avg_size={avg_size:.2f} "
+            f"large_pct={large_pct:.0f}% "
+            f"delay_ok={delay_ok} "
+            f"sweep={sweep_str} "
+            f"sweep_aligned={sweep_aligned} "
+            f"spread={spread_pct:.4f}% "
+            f"vol_imb={vol_imbalance:+.1f}% "
+            f"vwap_dist={vwap_dist:+.3f} "
+            f"p_impact={price_impact_norm:.2f} "
+            f"trade_freq={trade_freq:.1f}/s "
+            f"cluster_cv={clustering_cv:.2f} "
+            f"cvd={cvd:+.2f} "
+            f"cvd_div={cvd_divergence} "
+            f"p_eff={price_efficiency:.2f} "
+            f"dollar_pt={dollar_per_trade:.0f} "
+            f"trade_accel={trade_accel:+d} "
+            f"ob_imb={depth_imb:+.1f}% "
+            f"ob_bid_wall={depth_bid_wall} "
+            f"ob_ask_wall={depth_ask_wall}"
+        )
+
     def open_position(self, signal: dict):
         """Open a new position or add DCA entry."""
+        self._log_signal_metrics(signal)
         symbol = signal["symbol"]
         direction = signal["direction"]
         price = signal["price"]
@@ -1286,6 +1481,8 @@ class VolumeBarsBot:
         for s in self.pairs:
             raw = s.replace("/", "").lower()
             stream_parts.append(f"{raw}@aggTrade")
+            stream_parts.append(f"{raw}@bookTicker")
+            stream_parts.append(f"{raw}@depth5@100ms")
             ws_to_pair[s.replace("/", "").upper()] = s
         streams = "/".join(stream_parts)
         url = f"wss://fstream.binance.com/stream?streams={streams}"
@@ -1328,7 +1525,56 @@ class VolumeBarsBot:
                     return
 
                 self._trade_count += 1
+                is_buyer_maker = data.get("m", False)
+                if not hasattr(self, '_recent_trades'):
+                    self._recent_trades = {}
+                if symbol not in self._recent_trades:
+                    import collections
+                    self._recent_trades[symbol] = collections.deque(maxlen=100)
+                self._recent_trades[symbol].append({
+                    "price": price, "ts": time.time(),
+                    "is_sell": is_buyer_maker, "qty": qty
+                })
                 self._ws_last_kline = time.time()
+
+                # 0a. Track depth5 (order book top 5)
+                event_type = data.get("e", "")
+                if event_type == "depthUpdate":
+                    if not hasattr(self, '_depth'):
+                        self._depth = {}
+                    bids = data.get("b", [])
+                    asks = data.get("a", [])
+                    bid_vol = sum(float(b[1]) for b in bids[:5]) if bids else 0
+                    ask_vol = sum(float(a[1]) for a in asks[:5]) if asks else 0
+                    total = bid_vol + ask_vol
+                    imbalance = (bid_vol - ask_vol) / total * 100 if total > 0 else 0
+                    # Wall detection: any level with 3x+ avg volume
+                    all_vols = [float(b[1]) for b in bids[:5]] + [float(a[1]) for a in asks[:5]]
+                    avg_level_vol = sum(all_vols) / len(all_vols) if all_vols else 1
+                    bid_wall = any(float(b[1]) > avg_level_vol * 3 for b in bids[:5])
+                    ask_wall = any(float(a[1]) > avg_level_vol * 3 for a in asks[:5])
+                    self._depth[symbol] = {
+                        "bid_vol": bid_vol, "ask_vol": ask_vol,
+                        "imbalance": imbalance,
+                        "bid_wall": bid_wall, "ask_wall": ask_wall,
+                        "ts": time.time()
+                    }
+                    return
+
+                # 0b. Track bookTicker (spread)
+                if event_type == "bookTicker":
+                    bid = float(data.get("b", 0))
+                    ask = float(data.get("a", 0))
+                    if bid > 0 and ask > 0:
+                        if not hasattr(self, '_spreads'):
+                            self._spreads = {}
+                        self._spreads[symbol] = {
+                            "bid": bid, "ask": ask,
+                            "spread": ask - bid,
+                            "spread_pct": (ask - bid) / ((ask + bid) / 2) * 100,
+                            "ts": time.time()
+                        }
+                    return  # bookTicker has no volume/trade data
 
                 # 1. SL/TP/Move SL check on every trade (real-time)
                 self._process_price(symbol, price)
