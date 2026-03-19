@@ -1452,6 +1452,13 @@ class VolumeBarsBot:
                 f"MFE:{mfe:+.2f}% MAE:{mae:.2f}% High:{_pfmt(pos.max_price)} Low:{_pfmt(pos.min_price)}\n")
         self._write_trades_log(line)
 
+        # CLOSE_DATA: log 68 metrics at exit moment
+        try:
+            _sig = {"symbol": pos.symbol, "direction": pos.direction, "price": exit_price, "atr": pos.entry_atr}
+            self._log_signal_metrics(_sig)
+        except Exception:
+            pass
+
         # paper_trades.json — update existing OPEN object
         trades = self._read_paper_trades()
         for t in reversed(trades):
@@ -1799,6 +1806,80 @@ class VolumeBarsBot:
         # Save state to disk after every scan
         self._save_state()
 
+    def _log_hold_metrics(self, pos, price):
+        """Log 68 metrics every 5 sec while position is open."""
+        now = time.time()
+        if not hasattr(pos, '_last_hold_log'):
+            pos._last_hold_log = 0
+        if now - pos._last_hold_log < 5.0:
+            return
+        pos._last_hold_log = now
+
+        symbol = pos.symbol
+        direction = pos.direction
+        atr_val = pos.entry_atr if pos.entry_atr > 0 else 1
+        trades = list(getattr(self, '_recent_trades', {}).get(symbol, []))
+        if len(trades) < 5:
+            return
+
+        recent20 = trades[-20:]
+
+        # Key metrics only (most important for exit decisions)
+        p_buy = sum(1 for t in recent20 if not t["is_sell"]) / len(recent20)
+        tick_mom = (1 - p_buy) * 100 if direction == "SHORT" else p_buy * 100
+
+        recent_1s = [t for t in trades if now - t["ts"] <= 1.0]
+        velocity = (recent_1s[-1]["price"] - recent_1s[0]["price"]) / atr_val if len(recent_1s) >= 2 else 0
+
+        buy_vol = sum(t["price"] * t["qty"] for t in recent20 if not t["is_sell"])
+        sell_vol = sum(t["price"] * t["qty"] for t in recent20 if t["is_sell"])
+        total_vol = buy_vol + sell_vol
+        vol_imb = (buy_vol - sell_vol) / total_vol * 100 if total_vol > 0 else 0
+
+        prices_list = [t["price"] for t in recent20]
+        if len(prices_list) >= 3:
+            net_move = abs(prices_list[-1] - prices_list[0])
+            gross_move = sum(abs(prices_list[i+1] - prices_list[i]) for i in range(len(prices_list)-1))
+            p_eff = net_move / gross_move if gross_move > 0 else 0
+        else:
+            p_eff = 0
+
+        recent_3s = [t for t in trades if now - t["ts"] <= 3.0]
+        trade_freq = len(recent_3s) / 3.0
+
+        all_recent = trades[-50:]
+        cvd = sum(t["qty"] if not t["is_sell"] else -t["qty"] for t in all_recent)
+
+        spread_data = getattr(self, '_spreads', {}).get(symbol, {})
+        spread_pct = spread_data.get("spread_pct", 0)
+
+        depth_data = getattr(self, '_depth', {}).get(symbol, {})
+        depth_imb = depth_data.get("imbalance", 0)
+
+        mark_data = getattr(self, '_mark_data', {}).get(symbol, {})
+        funding = mark_data.get("funding_rate", 0) * 100
+
+        if direction == "LONG":
+            pnl = (price - pos.avg_price) / pos.avg_price * 100
+        else:
+            pnl = (pos.avg_price - price) / pos.avg_price * 100
+
+        logger.info(
+            f"  HOLD_DATA {direction} {symbol} "
+            f"pnl={pnl:+.3f}% "
+            f"tick_mom={tick_mom:.0f}% "
+            f"velocity={velocity:+.4f} "
+            f"vol_imb={vol_imb:+.1f}% "
+            f"p_eff={p_eff:.2f} "
+            f"trade_freq={trade_freq:.1f}/s "
+            f"cvd={cvd:+.2f} "
+            f"spread={spread_pct:.4f}% "
+            f"ob_imb={depth_imb:+.1f}% "
+            f"funding={funding:+.4f}% "
+            f"bars={pos.bars_held} "
+            f"sl_step={pos.sl_step}"
+        )
+
     def _process_price(self, symbol: str, price: float):
         """Process a price tick for Move SL logic (called from WebSocket or polling)."""
         with self._lock:
@@ -1807,6 +1888,7 @@ class VolumeBarsBot:
             return
 
         for pos in active:
+            self._log_hold_metrics(pos, price)
             ea = pos.entry_atr if pos.entry_atr > 0 else 0
             if ea <= 0:
                 continue
