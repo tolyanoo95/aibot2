@@ -2001,30 +2001,8 @@ class VolumeBarsBot:
                 if not symbol:
                     return
 
-                # Route non-aggTrade events BEFORE price/qty check
+                # Route by event type
                 event_type = data.get("e", "")
-                if event_type in ("depthUpdate", "bookTicker", "markPriceUpdate"):
-                    pass  # handled below after symbol lookup
-                else:
-                    # aggTrade processing
-                    price = float(data.get("p", 0))
-                    qty = float(data.get("q", 0))
-                    trade_ts = pd.Timestamp(int(data.get("T", 0)), unit="ms")
-                    if price <= 0 or qty <= 0:
-                        return
-
-                self._trade_count += 1
-                is_buyer_maker = data.get("m", False)
-                if not hasattr(self, '_recent_trades'):
-                    self._recent_trades = {}
-                if symbol not in self._recent_trades:
-                    import collections
-                    self._recent_trades[symbol] = collections.deque(maxlen=100)
-                self._recent_trades[symbol].append({
-                    "price": price, "ts": time.time(),
-                    "is_sell": is_buyer_maker, "qty": qty
-                })
-                self._ws_last_kline = time.time()
 
                 # 0a. Track depth5 (order book top 5)
                 if event_type == "depthUpdate":
@@ -2102,6 +2080,29 @@ class VolumeBarsBot:
                             self._spread_history[symbol] = collections.deque(maxlen=20)
                         self._spread_history[symbol].append(spread_pct)
                     return
+
+                # aggTrade only from here
+                if event_type != "aggTrade" and event_type != "":
+                    return  # not aggTrade, already handled above
+
+                price = float(data.get("p", 0))
+                qty = float(data.get("q", 0))
+                trade_ts = pd.Timestamp(int(data.get("T", 0)), unit="ms")
+                if price <= 0 or qty <= 0:
+                    return
+
+                self._trade_count += 1
+                is_buyer_maker = data.get("m", False)
+                if not hasattr(self, '_recent_trades'):
+                    self._recent_trades = {}
+                if symbol not in self._recent_trades:
+                    import collections
+                    self._recent_trades[symbol] = collections.deque(maxlen=100)
+                self._recent_trades[symbol].append({
+                    "price": price, "ts": time.time(),
+                    "is_sell": is_buyer_maker, "qty": qty
+                })
+                self._ws_last_kline = time.time()
 
                 # 1. SL/TP/Move SL check on every trade (real-time)
                 self._process_price(symbol, price)
