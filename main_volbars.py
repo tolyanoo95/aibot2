@@ -942,6 +942,9 @@ class VolumeBarsBot:
         net_flow_30s = sum(t["qty"] if not t["is_sell"] else -t["qty"]
                           for t in trades if now - t["ts"] <= 30.0)
 
+        # Early init mark_data (used by multiple metrics below)
+        mark_data = getattr(self, '_mark_data', {}).get(symbol, {})
+
         # 47. Price-volume divergence (price up but volume down = weak)
         pv_divergence = False
         if len(trades) >= 20:
