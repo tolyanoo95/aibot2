@@ -2001,11 +2001,17 @@ class VolumeBarsBot:
                 if not symbol:
                     return
 
-                price = float(data.get("p", 0))
-                qty = float(data.get("q", 0))
-                trade_ts = pd.Timestamp(int(data.get("T", 0)), unit="ms")
-                if price <= 0 or qty <= 0:
-                    return
+                # Route non-aggTrade events BEFORE price/qty check
+                event_type = data.get("e", "")
+                if event_type in ("depthUpdate", "bookTicker", "markPriceUpdate"):
+                    pass  # handled below after symbol lookup
+                else:
+                    # aggTrade processing
+                    price = float(data.get("p", 0))
+                    qty = float(data.get("q", 0))
+                    trade_ts = pd.Timestamp(int(data.get("T", 0)), unit="ms")
+                    if price <= 0 or qty <= 0:
+                        return
 
                 self._trade_count += 1
                 is_buyer_maker = data.get("m", False)
@@ -2021,7 +2027,6 @@ class VolumeBarsBot:
                 self._ws_last_kline = time.time()
 
                 # 0a. Track depth5 (order book top 5)
-                event_type = data.get("e", "")
                 if event_type == "depthUpdate":
                     if not hasattr(self, '_depth'):
                         self._depth = {}
