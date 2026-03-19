@@ -762,6 +762,96 @@ class VolumeBarsBot:
         freq_before = len([t for t in trades if 3.0 <= now - t["ts"] <= 4.0])
         trade_accel = freq_now - freq_before
 
+        # 22. Absorption: price stable despite high volume (someone absorbing with limit)
+        if len(recent20) >= 5 and atr_val > 0:
+            price_range_20 = max(t["price"] for t in recent20) - min(t["price"] for t in recent20)
+            vol_sum_20 = sum(t["qty"] for t in recent20)
+            absorption = (vol_sum_20 / (price_range_20 / atr_val)) if price_range_20 > 0 else 0
+        else:
+            absorption = 0
+
+        # 23. Iceberg: repeated same-size trades at same price (hidden large order)
+        iceberg = False
+        if len(recent20) >= 5:
+            sizes_rounded = [round(t["qty"], 2) for t in recent20[-10:]]
+            prices_rounded = [round(t["price"], 4) for t in recent20[-10:]]
+            from collections import Counter
+            size_counts = Counter(sizes_rounded)
+            most_common_size, most_common_count = size_counts.most_common(1)[0]
+            if most_common_count >= 4 and most_common_size > 0:
+                same_size_trades = [t for t in recent20[-10:] if round(t["qty"], 2) == most_common_size]
+                same_price = len(set(round(t["price"], 4) for t in same_size_trades)) <= 2
+                iceberg = same_price
+
+        # 24. Delta acceleration (CVD change rate)
+        if len(all_recent) >= 10:
+            cvd_first = sum(t["qty"] if not t["is_sell"] else -t["qty"] for t in all_recent[:len(all_recent)//2])
+            cvd_second = sum(t["qty"] if not t["is_sell"] else -t["qty"] for t in all_recent[len(all_recent)//2:])
+            delta_accel = cvd_second - cvd_first
+        else:
+            delta_accel = 0
+
+        # 25. Size trend (are trades getting bigger or smaller?)
+        if len(recent20) >= 10:
+            first_half_avg = sum(t["qty"] for t in recent20[:10]) / 10
+            second_half_avg = sum(t["qty"] for t in recent20[10:]) / max(len(recent20[10:]), 1)
+            size_trend = (second_half_avg - first_half_avg) / first_half_avg if first_half_avg > 0 else 0
+        else:
+            size_trend = 0
+
+        # 26. Price momentum consistency (how consistently price moves in one direction)
+        if len(recent20) >= 5:
+            price_changes = [recent20[i+1]["price"] - recent20[i]["price"] for i in range(len(recent20)-1)]
+            if direction == "SHORT":
+                price_changes = [-c for c in price_changes]
+            positive = sum(1 for c in price_changes if c > 0)
+            mom_consistency = positive / len(price_changes) if price_changes else 0.5
+        else:
+            mom_consistency = 0.5
+
+        # 27. Spread change (from bookTicker history)
+        spread_change = 0
+        if hasattr(self, '_spread_history') and symbol in self._spread_history:
+            sh = list(self._spread_history[symbol])
+            if len(sh) >= 2:
+                spread_change = sh[-1] - sh[0]
+
+        # 28. Bid/ask size ratio (from bookTicker)
+        ba_ratio = 1.0
+        if spread_data:
+            bid_sz = spread_data.get("bid_qty", 0)
+            ask_sz = spread_data.get("ask_qty", 0)
+            ba_ratio = bid_sz / ask_sz if ask_sz > 0 else 10.0
+
+        # 30. Total depth (sum all 5 levels bid + ask)
+        total_depth = depth_data.get("bid_vol", 0) + depth_data.get("ask_vol", 0)
+
+        # 31. Depth gradient (is volume concentrated at best level or spread?)
+        depth_gradient = 0
+        if hasattr(self, '_depth') and symbol in self._depth:
+            dd = self._depth[symbol]
+            bids_raw = dd.get("bids_raw", [])
+            asks_raw = dd.get("asks_raw", [])
+            if bids_raw:
+                best_bid_vol = bids_raw[0] if bids_raw else 0
+                total_bid = sum(bids_raw) if bids_raw else 1
+                depth_gradient = best_bid_vol / total_bid if total_bid > 0 else 0
+
+        # 32. Wall distance (ATR to nearest wall)
+        wall_dist = 99.0
+        if hasattr(self, '_depth') and symbol in self._depth:
+            dd = self._depth[symbol]
+            wall_price = dd.get("wall_price", 0)
+            if wall_price > 0 and atr_val > 0:
+                wall_dist = abs(signal["price"] - wall_price) / atr_val
+
+        # 33. Depth velocity (is depth decreasing = orders pulled = incoming move)
+        depth_vel = 0
+        if hasattr(self, '_depth_history') and symbol in self._depth_history:
+            dh = list(self._depth_history[symbol])
+            if len(dh) >= 2:
+                depth_vel = dh[-1] - dh[0]
+
         logger.info(
             f"  SIGNAL_DATA {direction} {symbol} "
             f"tick_mom={tick_mom:.0f}% "
@@ -787,7 +877,18 @@ class VolumeBarsBot:
             f"trade_accel={trade_accel:+d} "
             f"ob_imb={depth_imb:+.1f}% "
             f"ob_bid_wall={depth_bid_wall} "
-            f"ob_ask_wall={depth_ask_wall}"
+            f"ob_ask_wall={depth_ask_wall} "
+            f"absorb={absorption:.0f} "
+            f"iceberg={iceberg} "
+            f"d_accel={delta_accel:+.1f} "
+            f"sz_trend={size_trend:+.2f} "
+            f"mom_cons={mom_consistency:.2f} "
+            f"spr_chg={spread_change:+.6f} "
+            f"ba_ratio={ba_ratio:.2f} "
+            f"tot_depth={total_depth:.1f} "
+            f"d_grad={depth_gradient:.2f} "
+            f"wall_dist={wall_dist:.1f} "
+            f"d_vel={depth_vel:+.1f}"
         )
 
     def open_position(self, signal: dict):
@@ -1553,12 +1654,30 @@ class VolumeBarsBot:
                     avg_level_vol = sum(all_vols) / len(all_vols) if all_vols else 1
                     bid_wall = any(float(b[1]) > avg_level_vol * 3 for b in bids[:5])
                     ask_wall = any(float(a[1]) > avg_level_vol * 3 for a in asks[:5])
+                    bids_raw = [float(b[1]) for b in bids[:5]]
+                    asks_raw = [float(a[1]) for a in asks[:5]]
+                    wall_price = 0
+                    for b in bids[:5]:
+                        if float(b[1]) > avg_level_vol * 3:
+                            wall_price = float(b[0]); break
+                    if wall_price == 0:
+                        for a in asks[:5]:
+                            if float(a[1]) > avg_level_vol * 3:
+                                wall_price = float(a[0]); break
                     self._depth[symbol] = {
                         "bid_vol": bid_vol, "ask_vol": ask_vol,
                         "imbalance": imbalance,
                         "bid_wall": bid_wall, "ask_wall": ask_wall,
+                        "bids_raw": bids_raw, "asks_raw": asks_raw,
+                        "wall_price": wall_price,
                         "ts": time.time()
                     }
+                    import collections
+                    if not hasattr(self, '_depth_history'):
+                        self._depth_history = {}
+                    if symbol not in self._depth_history:
+                        self._depth_history[symbol] = collections.deque(maxlen=20)
+                    self._depth_history[symbol].append(bid_vol + ask_vol)
                     return
 
                 # 0b. Track bookTicker (spread)
@@ -1568,13 +1687,21 @@ class VolumeBarsBot:
                     if bid > 0 and ask > 0:
                         if not hasattr(self, '_spreads'):
                             self._spreads = {}
+                        bid_qty = float(data.get("B", 0))
+                        ask_qty = float(data.get("A", 0))
+                        spread_pct = (ask - bid) / ((ask + bid) / 2) * 100
                         self._spreads[symbol] = {
-                            "bid": bid, "ask": ask,
-                            "spread": ask - bid,
-                            "spread_pct": (ask - bid) / ((ask + bid) / 2) * 100,
+                            "bid": bid, "ask": ask, "bid_qty": bid_qty, "ask_qty": ask_qty,
+                            "spread": ask - bid, "spread_pct": spread_pct,
                             "ts": time.time()
                         }
-                    return  # bookTicker has no volume/trade data
+                        if not hasattr(self, '_spread_history'):
+                            self._spread_history = {}
+                        import collections
+                        if symbol not in self._spread_history:
+                            self._spread_history[symbol] = collections.deque(maxlen=20)
+                        self._spread_history[symbol].append(spread_pct)
+                    return
 
                 # 1. SL/TP/Move SL check on every trade (real-time)
                 self._process_price(symbol, price)
