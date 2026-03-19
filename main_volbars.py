@@ -934,6 +934,110 @@ class VolumeBarsBot:
                 deep_ask = sum(ar[2:])
                 book_skew = (deep_bid - deep_ask) / (deep_bid + deep_ask) * 100 if (deep_bid + deep_ask) > 0 else 0
 
+        # 46. Net flow at 1s, 5s, 30s windows (signed volume)
+        net_flow_1s = sum(t["qty"] if not t["is_sell"] else -t["qty"]
+                         for t in trades if now - t["ts"] <= 1.0)
+        net_flow_5s = sum(t["qty"] if not t["is_sell"] else -t["qty"]
+                         for t in trades if now - t["ts"] <= 5.0)
+        net_flow_30s = sum(t["qty"] if not t["is_sell"] else -t["qty"]
+                          for t in trades if now - t["ts"] <= 30.0)
+
+        # 47. Price-volume divergence (price up but volume down = weak)
+        pv_divergence = False
+        if len(trades) >= 20:
+            half = len(list(trades)) // 2
+            t_list = list(trades)
+            first_half_vol = sum(t["qty"] for t in t_list[:half])
+            second_half_vol = sum(t["qty"] for t in t_list[half:])
+            price_up = t_list[-1]["price"] > t_list[0]["price"]
+            vol_down = second_half_vol < first_half_vol * 0.7
+            pv_divergence = (price_up and vol_down) or (not price_up and vol_down)
+
+        # 48. Mark-index spread (liquidation pressure)
+        mark_index_spread = 0
+        if mark_data and atr_val > 0:
+            mp = mark_data.get("mark_price", 0)
+            ip = mark_data.get("index_price", 0)
+            if mp > 0 and ip > 0:
+                mark_index_spread = (mp - ip) / atr_val
+
+        # 49. Funding change (tracking funding rate over time)
+        funding_change = 0
+        if hasattr(self, '_funding_history') and symbol in self._funding_history:
+            fh = list(self._funding_history[symbol])
+            if len(fh) >= 2:
+                funding_change = fh[-1] - fh[0]
+        if mark_data and mark_data.get("funding_rate", 0) != 0:
+            if not hasattr(self, '_funding_history'):
+                self._funding_history = {}
+            import collections as _colx
+            if symbol not in self._funding_history:
+                self._funding_history[symbol] = _colx.deque(maxlen=20)
+            self._funding_history[symbol].append(mark_data.get("funding_rate", 0))
+
+        # 50. Depth-weighted midprice (weighted avg across all 5 levels)
+        depth_mid = 0
+        if hasattr(self, '_depth') and symbol in self._depth:
+            dd = self._depth[symbol]
+            br = dd.get("bids_raw", [])
+            ar = dd.get("asks_raw", [])
+            bids_prices = [float(b[0]) for b in data.get("b", [])] if "b" in data and isinstance(data.get("b"), list) else []
+            # Use stored data instead
+            if br and ar and spread_data:
+                bid_p = spread_data.get("bid", 0)
+                ask_p = spread_data.get("ask", 0)
+                if bid_p > 0 and ask_p > 0:
+                    total_w = sum(br) + sum(ar)
+                    if total_w > 0:
+                        depth_mid = (bid_p * sum(ar) + ask_p * sum(br)) / total_w
+                        depth_mid = (depth_mid - (bid_p + ask_p) / 2) / atr_val if atr_val > 0 else 0
+
+        # 51. Book recovery (depth change after large recent trade)
+        book_recovery = 0
+        if hasattr(self, '_depth_history') and symbol in self._depth_history:
+            dh = list(self._depth_history[symbol])
+            if len(dh) >= 5:
+                mid_val = dh[len(dh)//2]
+                if mid_val > 0:
+                    drop = min(dh) / mid_val
+                    book_recovery = dh[-1] / mid_val if mid_val > 0 else 1.0
+
+        # 52. Cross-pair BTC signal (BTC moving but pair not = divergence)
+        btc_velocity = 0
+        btc_trades = getattr(self, '_recent_trades', {}).get("BTC/USDT", [])
+        if len(list(btc_trades)) >= 5 and symbol != "BTC/USDT":
+            btc_list = list(btc_trades)
+            btc_recent = [t for t in btc_list if now - t["ts"] <= 3.0]
+            if len(btc_recent) >= 2:
+                btc_velocity = (btc_recent[-1]["price"] - btc_recent[0]["price"]) / btc_recent[0]["price"] * 10000
+
+        # 53. Bid/ask momentum (bid price trend over recent bookTicker updates)
+        bid_momentum = 0
+        if hasattr(self, '_bid_history') and symbol in self._bid_history:
+            bh = list(self._bid_history[symbol])
+            if len(bh) >= 3 and atr_val > 0:
+                bid_momentum = (bh[-1] - bh[0]) / atr_val
+        if spread_data and spread_data.get("bid", 0) > 0:
+            if not hasattr(self, '_bid_history'):
+                self._bid_history = {}
+            import collections as _coly
+            if symbol not in self._bid_history:
+                self._bid_history[symbol] = _coly.deque(maxlen=20)
+            self._bid_history[symbol].append(spread_data["bid"])
+
+        # 54. Volume concentration (is volume at one price or spread?)
+        vol_concentration = 0
+        if len(recent20) >= 5:
+            from collections import Counter as _Ctr
+            price_vols = {}
+            for t in recent20:
+                rp = round(t["price"], 2)
+                price_vols[rp] = price_vols.get(rp, 0) + t["qty"]
+            if price_vols:
+                max_vol = max(price_vols.values())
+                total_v = sum(price_vols.values())
+                vol_concentration = max_vol / total_v if total_v > 0 else 0
+
         # 43-45. Mark price / funding rate
         mark_data = getattr(self, '_mark_data', {}).get(symbol, {})
         funding_rate = mark_data.get("funding_rate", 0) * 100  # as percentage
@@ -992,7 +1096,18 @@ class VolumeBarsBot:
             f"book_skew={book_skew:+.1f}% "
             f"funding={funding_rate:+.4f}% "
             f"mark_vs_last={mark_vs_last:+.3f} "
-            f"fund_aligned={funding_aligned}"
+            f"fund_aligned={funding_aligned} "
+            f"nf1={net_flow_1s:+.2f} "
+            f"nf5={net_flow_5s:+.2f} "
+            f"nf30={net_flow_30s:+.2f} "
+            f"pv_div={pv_divergence} "
+            f"mi_spr={mark_index_spread:+.4f} "
+            f"fund_chg={funding_change:+.6f} "
+            f"d_mid={depth_mid:+.4f} "
+            f"bk_rec={book_recovery:.2f} "
+            f"btc_vel={btc_velocity:+.2f} "
+            f"bid_mom={bid_momentum:+.4f} "
+            f"vol_conc={vol_concentration:.2f}"
         )
 
     def open_position(self, signal: dict):
