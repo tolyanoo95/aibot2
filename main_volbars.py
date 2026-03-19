@@ -1038,6 +1038,152 @@ class VolumeBarsBot:
                 total_v = sum(price_vols.values())
                 vol_concentration = max_vol / total_v if total_v > 0 else 0
 
+        # 55. Trade-sign entropy
+        import math
+        if len(recent20) >= 5:
+            p_buy = sum(1 for t in recent20 if not t["is_sell"]) / len(recent20)
+            p_sell = 1 - p_buy
+            sign_entropy = 0
+            if 0 < p_buy < 1:
+                sign_entropy = -(p_buy * math.log2(p_buy) + p_sell * math.log2(p_sell))
+        else:
+            sign_entropy = 1.0
+
+        # 56. KL surprise (deviation from random 50/50)
+        if len(recent20) >= 5 and 0 < p_buy < 1:
+            kl_surprise = p_buy * math.log2(p_buy / 0.5) + p_sell * math.log2(p_sell / 0.5)
+        else:
+            kl_surprise = 0
+
+        # 58. Book convexity (bid side)
+        book_convexity = 0
+        if hasattr(self, '_depth') and symbol in self._depth:
+            dd = self._depth[symbol]
+            br = dd.get("bids_raw", [])
+            if len(br) >= 3:
+                book_convexity = (br[0] + br[-1]) / 2 - br[len(br)//2] if br[len(br)//2] > 0 else 0
+
+        # 61. Level-weighted imbalance (exponential decay by level)
+        lw_imbalance = 0
+        if hasattr(self, '_depth') and symbol in self._depth:
+            dd = self._depth[symbol]
+            br = dd.get("bids_raw", [])
+            ar = dd.get("asks_raw", [])
+            if br and ar:
+                weights = [2**(-i) for i in range(min(len(br), len(ar)))]
+                w_bid = sum(br[i] * weights[i] for i in range(len(weights)))
+                w_ask = sum(ar[i] * weights[i] for i in range(len(weights)))
+                total_w = w_bid + w_ask
+                lw_imbalance = (w_bid - w_ask) / total_w * 100 if total_w > 0 else 0
+
+        # 62. Book resilience (depth beyond best level)
+        book_resilience = 0
+        if hasattr(self, '_depth') and symbol in self._depth:
+            dd = self._depth[symbol]
+            br = dd.get("bids_raw", [])
+            if len(br) >= 2 and sum(br) > 0:
+                book_resilience = sum(br[1:]) / sum(br)
+
+        # 63. VPIN (simplified: absolute imbalance / total volume over last 50 trades)
+        if len(all_recent) >= 10:
+            buy_v = sum(t["qty"] for t in all_recent if not t["is_sell"])
+            sell_v = sum(t["qty"] for t in all_recent if t["is_sell"])
+            total_v = buy_v + sell_v
+            vpin = abs(buy_v - sell_v) / total_v if total_v > 0 else 0
+        else:
+            vpin = 0
+
+        # 66. Jump ratio (realized vol vs bipower variation)
+        jump_ratio = 0
+        if len(recent20) >= 5:
+            returns = [abs(recent20[i+1]["price"] / recent20[i]["price"] - 1)
+                      for i in range(len(recent20)-1) if recent20[i]["price"] > 0]
+            if len(returns) >= 3:
+                rv = sum(r**2 for r in returns)
+                bv = (math.pi / 2) * sum(abs(returns[i]) * abs(returns[i-1])
+                      for i in range(1, len(returns))) / max(len(returns)-1, 1)
+                jump_ratio = max(0, 1 - bv / rv) if rv > 0 else 0
+
+        # 71. Trade-sign autocorrelation lag-1
+        sign_autocorr = 0
+        if len(recent20) >= 10:
+            signs = [1 if not t["is_sell"] else -1 for t in recent20]
+            mean_s = sum(signs) / len(signs)
+            var_s = sum((s - mean_s)**2 for s in signs)
+            if var_s > 0:
+                cov_s = sum((signs[i] - mean_s) * (signs[i+1] - mean_s)
+                           for i in range(len(signs)-1))
+                sign_autocorr = cov_s / var_s
+
+        # 79. Basis Z-score (mark-index spread vs recent history)
+        basis_zscore = 0
+        if mark_data and mark_data.get("mark_price", 0) > 0 and mark_data.get("index_price", 0) > 0:
+            basis = (mark_data["mark_price"] - mark_data["index_price"]) / mark_data["index_price"] * 10000
+            if hasattr(self, '_basis_history') and symbol in self._basis_history:
+                bh = list(self._basis_history[symbol])
+                if len(bh) >= 3:
+                    mean_b = sum(bh) / len(bh)
+                    std_b = (sum((b - mean_b)**2 for b in bh) / len(bh)) ** 0.5
+                    basis_zscore = (basis - mean_b) / std_b if std_b > 0 else 0
+            if not hasattr(self, '_basis_history'):
+                self._basis_history = {}
+            import collections as _colz
+            if symbol not in self._basis_history:
+                self._basis_history[symbol] = _colz.deque(maxlen=50)
+            self._basis_history[symbol].append(basis)
+
+        # 80. Price-level Gini (concentration of trades at price levels)
+        price_gini = 0
+        if len(recent20) >= 5:
+            from collections import Counter as _Ctr2
+            price_counts = _Ctr2(round(t["price"], 2) for t in recent20)
+            vals = sorted(price_counts.values())
+            n_g = len(vals)
+            if n_g > 0 and sum(vals) > 0:
+                cum = sum((2 * (i+1) - n_g - 1) * v for i, v in enumerate(vals))
+                price_gini = cum / (n_g * sum(vals))
+
+        # 81. Informed flow proxy (aggressive trades when spread wide)
+        informed_flow = 0
+        if spread_data and spread_data.get("spread_pct", 0) > 0:
+            median_spread = 0.01  # rough default
+            if hasattr(self, '_spread_history') and symbol in self._spread_history:
+                sh = list(self._spread_history[symbol])
+                if sh:
+                    median_spread = sorted(sh)[len(sh)//2]
+            wide_spread = spread_data["spread_pct"] > median_spread
+            if wide_spread and len(recent20) >= 5:
+                aggressive = sum(1 for t in recent20[-10:]
+                               if (direction == "LONG" and not t["is_sell"]) or
+                                  (direction == "SHORT" and t["is_sell"]))
+                informed_flow = aggressive / min(10, len(recent20[-10:]))
+
+        # 82. Funding-mark alignment
+        fund_mark_align = 0
+        if mark_data and hasattr(self, '_mark_data'):
+            fr = mark_data.get("funding_rate", 0)
+            mp = mark_data.get("mark_price", 0)
+            if hasattr(self, '_mark_history') and symbol in self._mark_history:
+                mh = list(self._mark_history[symbol])
+                if mh and mp > 0:
+                    mark_change = mp - mh[-1]
+                    fund_mark_align = 1 if (fr > 0 and mark_change > 0) or (fr < 0 and mark_change < 0) else -1
+            if not hasattr(self, '_mark_history'):
+                self._mark_history = {}
+            import collections as _colm
+            if symbol not in self._mark_history:
+                self._mark_history[symbol] = _colm.deque(maxlen=20)
+            if mp > 0:
+                self._mark_history[symbol].append(mp)
+
+        # 60. Book slope (qty change per price level)
+        book_slope = 0
+        if hasattr(self, '_depth') and symbol in self._depth:
+            dd = self._depth[symbol]
+            br = dd.get("bids_raw", [])
+            if len(br) >= 3:
+                book_slope = (br[-1] - br[0]) / max(len(br)-1, 1)
+
         # 43-45. Mark price / funding rate
         mark_data = getattr(self, '_mark_data', {}).get(symbol, {})
         funding_rate = mark_data.get("funding_rate", 0) * 100  # as percentage
@@ -1107,7 +1253,20 @@ class VolumeBarsBot:
             f"bk_rec={book_recovery:.2f} "
             f"btc_vel={btc_velocity:+.2f} "
             f"bid_mom={bid_momentum:+.4f} "
-            f"vol_conc={vol_concentration:.2f}"
+            f"vol_conc={vol_concentration:.2f} "
+            f"entropy={sign_entropy:.2f} "
+            f"kl_surp={kl_surprise:.3f} "
+            f"bk_conv={book_convexity:.2f} "
+            f"lw_imb={lw_imbalance:+.1f}% "
+            f"bk_resil={book_resilience:.2f} "
+            f"vpin={vpin:.3f} "
+            f"jump={jump_ratio:.3f} "
+            f"sign_ac={sign_autocorr:+.2f} "
+            f"basis_z={basis_zscore:+.2f} "
+            f"p_gini={price_gini:.2f} "
+            f"inf_flow={informed_flow:.2f} "
+            f"fm_align={fund_mark_align:+d} "
+            f"bk_slope={book_slope:+.2f}"
         )
 
     def open_position(self, signal: dict):
