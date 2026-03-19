@@ -984,8 +984,7 @@ class VolumeBarsBot:
             dd = self._depth[symbol]
             br = dd.get("bids_raw", [])
             ar = dd.get("asks_raw", [])
-            bids_prices = [float(b[0]) for b in data.get("b", [])] if "b" in data and isinstance(data.get("b"), list) else []
-            # Use stored data instead
+            # Use stored depth data (not raw WS data)
             if br and ar and spread_data:
                 bid_p = spread_data.get("bid", 0)
                 ask_p = spread_data.get("ask", 0)
