@@ -934,6 +934,16 @@ class VolumeBarsBot:
                 deep_ask = sum(ar[2:])
                 book_skew = (deep_bid - deep_ask) / (deep_bid + deep_ask) * 100 if (deep_bid + deep_ask) > 0 else 0
 
+        # 43-45. Mark price / funding rate
+        mark_data = getattr(self, '_mark_data', {}).get(symbol, {})
+        funding_rate = mark_data.get("funding_rate", 0) * 100  # as percentage
+        mark_price = mark_data.get("mark_price", 0)
+        last_price = signal["price"]
+        mark_vs_last = (mark_price - last_price) / atr_val if mark_price > 0 and atr_val > 0 else 0
+        # Funding aligned: SHORT + negative funding = good, LONG + positive = good
+        funding_aligned = (direction == "SHORT" and funding_rate < 0) or \
+                         (direction == "LONG" and funding_rate > 0)
+
         logger.info(
             f"  SIGNAL_DATA {direction} {symbol} "
             f"tick_mom={tick_mom:.0f}% "
@@ -979,7 +989,10 @@ class VolumeBarsBot:
             f"spr_std={spread_std:.4f} "
             f"qi_trend={qi_trend:+.2f} "
             f"disap_liq={disappearing_liq} "
-            f"book_skew={book_skew:+.1f}%"
+            f"book_skew={book_skew:+.1f}% "
+            f"funding={funding_rate:+.4f}% "
+            f"mark_vs_last={mark_vs_last:+.3f} "
+            f"fund_aligned={funding_aligned}"
         )
 
     def open_position(self, signal: dict):
@@ -1675,6 +1688,7 @@ class VolumeBarsBot:
             stream_parts.append(f"{raw}@aggTrade")
             stream_parts.append(f"{raw}@bookTicker")
             stream_parts.append(f"{raw}@depth5@100ms")
+            stream_parts.append(f"{raw}@markPrice")
             ws_to_pair[s.replace("/", "").upper()] = s
         streams = "/".join(stream_parts)
         url = f"wss://fstream.binance.com/stream?streams={streams}"
@@ -1769,6 +1783,19 @@ class VolumeBarsBot:
                     if symbol not in self._depth_history:
                         self._depth_history[symbol] = collections.deque(maxlen=20)
                     self._depth_history[symbol].append(bid_vol + ask_vol)
+                    return
+
+                # 0b2. Track markPrice (funding rate)
+                if event_type == "markPriceUpdate":
+                    if not hasattr(self, '_mark_data'):
+                        self._mark_data = {}
+                    self._mark_data[symbol] = {
+                        "mark_price": float(data.get("p", 0)),
+                        "index_price": float(data.get("i", 0)),
+                        "funding_rate": float(data.get("r", 0)),
+                        "next_funding": int(data.get("T", 0)),
+                        "ts": time.time()
+                    }
                     return
 
                 # 0b. Track bookTicker (spread)
