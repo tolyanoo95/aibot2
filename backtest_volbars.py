@@ -115,6 +115,8 @@ def run_backtest(
     max_open: int = 11,
     no_guards: bool = False,
     rank_by: str = "alphabetical",
+    reversion: bool = False,
+    end_date: str = None,
 ):
     global_mode = max_open < 11
     guards_label = "No guards" if no_guards else f"ADX>{ADX_MIN}+RSI+ATR_EXP"
@@ -151,6 +153,9 @@ def run_backtest(
         if symbol not in raw_data:
             continue
         df = raw_data[symbol]
+        if end_date:
+            cutoff = pd.Timestamp(end_date, tz="UTC") if df.index.tz else pd.Timestamp(end_date)
+            df = df[df.index <= cutoff]
         if len(df) > total_candles:
             df = df.iloc[-total_candles:]
         if len(df) < 200:
@@ -158,7 +163,7 @@ def run_backtest(
 
         tdf = indicators.calculate_all(df.copy())
         vdf = resample_to_volume_bars(df)
-        if len(vdf) < train_bars + test_bars:
+        if len(vdf) < 100:
             console.print(f"  [yellow]{symbol}: only {len(vdf)} vol bars, skipping[/yellow]")
             continue
 
@@ -200,6 +205,9 @@ def run_backtest(
         elif roc < -SHORT_MOM: direction = "SHORT"
         else: return None
 
+        if reversion:
+            direction = "SHORT" if direction == "LONG" else "LONG"
+
         htf_st = float(df_test["htf_supertrend"].iloc[j]) if "htf_supertrend" in df_test.columns else 0
         if not np.isnan(htf_st) and htf_st != 0:
             if direction == "LONG" and htf_st < 0: return None
@@ -221,38 +229,29 @@ def run_backtest(
                 "roc": abs(roc), "adx": adx_val}
 
     if not global_mode:
-        # Per-pair mode (original)
-        while start + train_bars + test_bars <= min_len:
-            fold += 1
-            train_end = start + train_bars
-            test_end = train_end + test_bars
-            fold_trades = []
-            for symbol, df_full in all_pair_data.items():
-                if len(df_full) < test_end: continue
-                df_test = df_full.iloc[train_end:test_end]
-                if len(df_test) < 20: continue
-                signals = []
-                for j in range(len(df_test)):
-                    sig = generate_signal(df_test, j, symbol)
-                    if sig: signals.append(sig)
-                trades = simulate_dca_trades(
-                    df_test, signals, tp_mult=tp_mult, dca_step_mult=1.0,
-                    max_entries=3, hard_sl_mult=sl_mult, max_hold=24,
-                    max_open=11, cooldown=3, threshold=0.10, full_size_dca=True,
-                    move_sl_at=MOVE_SL_STEPS[0][0] if MOVE_SL_STEPS else 0,
-                    move_sl_to=MOVE_SL_STEPS[0][1] if MOVE_SL_STEPS else 0,
-                    move_sl_steps=MOVE_SL_STEPS, move_sl_trail=MOVE_SL_TRAIL,
-                )
-                fold_trades.extend(trades)
-            if fold_trades:
-                pnl_f = sum(t.pnl_pct for t in fold_trades)
-                wr_f = sum(1 for t in fold_trades if t.pnl_pct > 0) / len(fold_trades) * 100
-                ts = list(all_pair_data.values())[0].index[train_end]
-                te_dt = list(all_pair_data.values())[0].index[min(test_end-1, len(list(all_pair_data.values())[0])-1)]
-                fold_results.append({"fold": fold, "trades": len(fold_trades), "wr": wr_f, "pnl": pnl_f,
-                                     "start": str(ts)[:10], "end": str(te_dt)[:10]})
-            all_trades.extend(fold_trades)
-            start += test_bars
+        # Simple single pass — no train/test/folds, just run all bars
+        fold = 1
+        for symbol, df_full in all_pair_data.items():
+            signals = []
+            for j in range(len(df_full)):
+                sig = generate_signal(df_full, j, symbol)
+                if sig: signals.append(sig)
+            trades = simulate_dca_trades(
+                df_full, signals, tp_mult=tp_mult, dca_step_mult=1.0,
+                max_entries=1, hard_sl_mult=sl_mult, max_hold=24,
+                max_open=11, cooldown=3, threshold=0.10, full_size_dca=True,
+                move_sl_at=MOVE_SL_STEPS[0][0] if MOVE_SL_STEPS else 0,
+                move_sl_to=MOVE_SL_STEPS[0][1] if MOVE_SL_STEPS else 0,
+                move_sl_steps=MOVE_SL_STEPS, move_sl_trail=MOVE_SL_TRAIL,
+            )
+            all_trades.extend(trades)
+        if all_trades:
+            pnl_f = sum(t.pnl_pct for t in all_trades)
+            wr_f = sum(1 for t in all_trades if t.pnl_pct > 0) / len(all_trades) * 100
+            ts = list(all_pair_data.values())[0].index[0]
+            te_dt = list(all_pair_data.values())[0].index[-1]
+            fold_results.append({"fold": 1, "trades": len(all_trades), "wr": wr_f, "pnl": pnl_f,
+                                 "start": str(ts)[:10], "end": str(te_dt)[:10]})
     else:
         # Global multi-pair mode (bar-by-bar, all pairs together)
         from dataclasses import dataclass, field as dc_field
@@ -508,6 +507,10 @@ if __name__ == "__main__":
                         help="Signal ranking for global mode (default: alphabetical)")
     parser.add_argument("--move-sl", action="store_true",
                         help="Enable 4-step Move SL (default: off)")
+    parser.add_argument("--reversion", action="store_true",
+                        help="Mean reversion mode: trade opposite to the signal")
+    parser.add_argument("--end-date", type=str, default=None,
+                        help="End date YYYY-MM-DD (default: latest in cache)")
     args = parser.parse_args()
 
     if args.move_sl:
@@ -518,5 +521,6 @@ if __name__ == "__main__":
         total_days=args.days, train_bars=args.train_bars,
         test_bars=args.test_bars, sl_mult=args.sl, tp_mult=args.tp,
         use_cache=not args.no_cache, max_open=args.max_open,
-        no_guards=args.no_guards, rank_by=args.rank,
+        no_guards=args.no_guards, rank_by=args.rank, reversion=args.reversion,
+        end_date=args.end_date,
     )
