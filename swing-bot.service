@@ -1,0 +1,15 @@
+[Unit]
+Description=Supertrend Swing Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/aibot-v2
+ExecStart=/root/aibot-v2/venv/bin/python3 /root/aibot-v2/main_swing.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
