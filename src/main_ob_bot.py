@@ -245,7 +245,12 @@ class OrderbookBot:
                     vo = self.virtual_orders["SOLUSDT"]
                     exit_price = vo['price']
                     exit_time = vo.get('fill_time', datetime.now())
-                    pnl_pct = (exit_price - entry_price) / entry_price if position_type == "long" else (entry_price - exit_price) / entry_price
+                    
+                    # Original position type was saved in the trade setup, but if we used "exit_pending"
+                    # we need to infer the original type from the exit order side (Sell exit = Long position)
+                    orig_type = "long" if vo['side'] == 'Sell' else "short"
+                    
+                    pnl_pct = (exit_price - entry_price) / entry_price if orig_type == "long" else (entry_price - exit_price) / entry_price
                     hold_time = (exit_time - entry_time).total_seconds()
                     
                     logger.info(f"💰 POSITION CLOSED at {exit_price} | PnL: {pnl_pct*100:.3f}% | Held: {hold_time}s")
@@ -253,7 +258,7 @@ class OrderbookBot:
                     # Log to file
                     self.log_paper_trade({
                         'symbol': 'SOLUSDT',
-                        'type': position_type,
+                        'type': orig_type,
                         'entry_time': entry_time,
                         'exit_time': exit_time,
                         'entry_price': entry_price,
@@ -306,6 +311,8 @@ class OrderbookBot:
                             if exit_cond:
                                 logger.info(f"Triggering Long Exit (PnL: {pnl_pct*100:.3f}%). Placing Limit Sell at {sol_features['best_ask']}")
                                 self.place_maker_order("SOLUSDT", "Sell", sol_features['best_ask'], 1.0)
+                                # To prevent multiple exit orders, we also clear the position type state until filled
+                                position_type = "exit_pending"
                                 
                         elif position_type == "short":
                             pnl_pct = (entry_price - sol_mid_price) / entry_price
@@ -315,6 +322,7 @@ class OrderbookBot:
                             if exit_cond:
                                 logger.info(f"Triggering Short Exit (PnL: {pnl_pct*100:.3f}%). Placing Limit Buy at {sol_features['best_bid']}")
                                 self.place_maker_order("SOLUSDT", "Buy", sol_features['best_bid'], 1.0)
+                                position_type = "exit_pending"
                                 
                     elif "SOLUSDT" in self.virtual_orders:
                         # We have an open order waiting to be filled.
