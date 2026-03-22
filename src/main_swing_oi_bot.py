@@ -292,70 +292,70 @@ class SwingOIBot:
                         self.last_candle_ts = candle_ts
                         
                         btc_bar = self.calculate_5m_bar("BTCUSDT")
-                            for symbol in [s for s in self.symbols if s != "BTCUSDT"]:
-                                sol_bar = self.calculate_5m_bar(symbol)
-                                if sol_bar:
-                                    # We only process logic if we have both BTC and the target coin data
-                                    oi_t = self.oi_thresh.get(symbol, 1000)
+                        for symbol in [s for s in self.symbols if s != "BTCUSDT"]:
+                            sol_bar = self.calculate_5m_bar(symbol)
+                            if btc_bar and sol_bar:
+                                # We only process logic if we have both BTC and the target coin data
+                                oi_t = self.oi_thresh.get(symbol, 1000)
+                                
+                                logger.info(f"📊 5m Close | BTC Delta: {btc_delta:.2f} | {symbol} OI Change: {sol_bar['oi_change']:.1f} | Liq: {sol_bar['liq_buy']}/{sol_bar['liq_sell']}")
+                                
+                                if len(rolling_btc_deltas_5m) > 10 and not self.position[symbol]:
+                                    btc_delta_thresh_long = np.percentile(rolling_btc_deltas_5m, 90)
+                                    btc_delta_thresh_short = np.percentile(rolling_btc_deltas_5m, 10)
                                     
-                                    logger.info(f"📊 5m Close | BTC Delta: {btc_delta:.2f} | {symbol} OI Change: {sol_bar['oi_change']:.1f} | Liq: {sol_bar['liq_buy']}/{sol_bar['liq_sell']}")
+                                    # Log feature row to CSV
+                                    feature_row = {
+                                        'ts': datetime.now().isoformat(),
+                                        'symbol': symbol,
+                                        'btc_delta': btc_delta,
+                                        'oi_change': sol_bar['oi_change'],
+                                        'liq_buy': sol_bar['liq_buy'],
+                                        'liq_sell': sol_bar['liq_sell']
+                                    }
                                     
-                                    if len(rolling_btc_deltas_5m) > 10 and not self.position[symbol]:
-                                        btc_delta_thresh_long = np.percentile(rolling_btc_deltas_5m, 90)
-                                        btc_delta_thresh_short = np.percentile(rolling_btc_deltas_5m, 10)
+                                    file_path = "swing_live_features_5m.csv"
+                                    write_header = not os.path.exists(file_path) or os.path.getsize(file_path) == 0
+                                    try:
+                                        with open(file_path, "a") as f:
+                                            if write_header:
+                                                f.write(",".join(feature_row.keys()) + "\n")
+                                            f.write(",".join([str(v) for v in feature_row.values()]) + "\n")
+                                    except Exception as e:
+                                        logger.error(f"Failed to write 5m features to CSV: {e}")
+                                    
+                                    # LONG ENTRY
+                                    if (btc_delta > btc_delta_thresh_long and 
+                                        sol_bar['oi_change'] > oi_t and 
+                                        sol_bar['liq_buy'] < 5000): # No massive short liquidations creating fake pump
                                         
-                                        # Log feature row to CSV
-                                        feature_row = {
-                                            'ts': datetime.now().isoformat(),
-                                            'symbol': symbol,
-                                            'btc_delta': btc_delta,
-                                            'oi_change': sol_bar['oi_change'],
-                                            'liq_buy': sol_bar['liq_buy'],
-                                            'liq_sell': sol_bar['liq_sell']
+                                        limit_price = sol_bar['close_price'] * (1 - self.entry_delay_pct)
+                                        logger.info(f"🚀 SWING LONG SIGNAL on {symbol}: BTC Delta {btc_delta:.2f} > {btc_delta_thresh_long:.2f}, OI {sol_bar['oi_change']} > {oi_t}")
+                                        logger.info(f"⏳ Placing LONG Limit Order at {limit_price:.2f} (waiting for {self.entry_delay_pct*100}% dip)")
+                                        
+                                        self.pending_entry[symbol] = {
+                                            'type': 'long',
+                                            'price': limit_price,
+                                            'ts': datetime.now()
                                         }
+                                        # self.place_limit_order(symbol, "Buy", 1.0, limit_price)
                                         
-                                        file_path = "swing_live_features_5m.csv"
-                                        write_header = not os.path.exists(file_path) or os.path.getsize(file_path) == 0
-                                        try:
-                                            with open(file_path, "a") as f:
-                                                if write_header:
-                                                    f.write(",".join(feature_row.keys()) + "\n")
-                                                f.write(",".join([str(v) for v in feature_row.values()]) + "\n")
-                                        except Exception as e:
-                                            logger.error(f"Failed to write 5m features to CSV: {e}")
+                                    # SHORT ENTRY
+                                    elif (btc_delta < btc_delta_thresh_short and 
+                                          sol_bar['oi_change'] > oi_t and 
+                                          sol_bar['liq_sell'] < 5000):
+                                          
+                                        limit_price = sol_bar['close_price'] * (1 + self.entry_delay_pct)
+                                        logger.info(f"🩸 SWING SHORT SIGNAL on {symbol}: BTC Delta {btc_delta:.2f} < {btc_delta_thresh_short:.2f}, OI {sol_bar['oi_change']} > {oi_t}")
+                                        logger.info(f"⏳ Placing SHORT Limit Order at {limit_price:.2f} (waiting for {self.entry_delay_pct*100}% pump)")
                                         
-                                        # LONG ENTRY
-                                        if (btc_delta > btc_delta_thresh_long and 
-                                            sol_bar['oi_change'] > oi_t and 
-                                            sol_bar['liq_buy'] < 5000): # No massive short liquidations creating fake pump
-                                            
-                                            limit_price = sol_bar['close_price'] * (1 - self.entry_delay_pct)
-                                            logger.info(f"🚀 SWING LONG SIGNAL on {symbol}: BTC Delta {btc_delta:.2f} > {btc_delta_thresh_long:.2f}, OI {sol_bar['oi_change']} > {oi_t}")
-                                            logger.info(f"⏳ Placing LONG Limit Order at {limit_price:.2f} (waiting for {self.entry_delay_pct*100}% dip)")
-                                            
-                                            self.pending_entry[symbol] = {
-                                                'type': 'long',
-                                                'price': limit_price,
-                                                'ts': datetime.now()
-                                            }
-                                            # self.place_limit_order(symbol, "Buy", 1.0, limit_price)
-                                            
-                                        # SHORT ENTRY
-                                        elif (btc_delta < btc_delta_thresh_short and 
-                                              sol_bar['oi_change'] > oi_t and 
-                                              sol_bar['liq_sell'] < 5000):
-                                              
-                                            limit_price = sol_bar['close_price'] * (1 + self.entry_delay_pct)
-                                            logger.info(f"🩸 SWING SHORT SIGNAL on {symbol}: BTC Delta {btc_delta:.2f} < {btc_delta_thresh_short:.2f}, OI {sol_bar['oi_change']} > {oi_t}")
-                                            logger.info(f"⏳ Placing SHORT Limit Order at {limit_price:.2f} (waiting for {self.entry_delay_pct*100}% pump)")
-                                            
-                                            self.pending_entry[symbol] = {
-                                                'type': 'short',
-                                                'price': limit_price,
-                                                'ts': datetime.now()
-                                            }
-                                            # self.place_limit_order(symbol, "Sell", 1.0, limit_price)
-
+                                        self.pending_entry[symbol] = {
+                                            'type': 'short',
+                                            'price': limit_price,
+                                            'ts': datetime.now()
+                                        }
+                                        # self.place_limit_order(symbol, "Sell", 1.0, limit_price)
+                                        
                 await asyncio.sleep(1) # Check continuously
             except Exception as e:
                 logger.error(f"Error in strategy loop: {e}")
