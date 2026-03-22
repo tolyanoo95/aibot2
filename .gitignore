@@ -8,6 +8,8 @@ env/
 # logs
 live_features.csv
 paper_trades.json
+swing_paper_trades.json
+swing_live_features_5m.csv
 
 # models
 models/*.json
