@@ -220,10 +220,10 @@ def optimize_hyp_c():
     print(f"Optimizing Hypothesis C on {len(df)} rows...")
     
     # We will test new parameters: Walls and Timeouts
-    tp_sl_pairs = [(0.005, 0.0025), (0.006, 0.003)]
-    obi_thresholds = [0.1, 0.2]
+    tp_sl_pairs = [(0.005, 0.0025)]
+    obi_thresholds = [0.1]
     wall_z_thresholds = [1.0, 2.0] # Require big wall (z-score > 1 or 2)
-    timeout_bars_list = [2, 3] # 20 seconds, 30 seconds
+    timeout_bars_list = [3, 6] # 30 seconds, 60 seconds
     
     results = []
     

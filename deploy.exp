@@ -1,0 +1,15 @@
+#!/usr/bin/expect -f
+set timeout 30
+spawn ssh root@173.242.55.249
+expect "password:"
+send "Tsvjg8LzRSXD\r"
+expect "# "
+send "cd /root/swing-bot\r"
+expect "# "
+send "git fetch && git reset --hard origin/swing-bot\r"
+expect "# "
+send "systemctl restart swing-oi-bot\r"
+expect "# "
+send "systemctl status swing-oi-bot --no-pager\r"
+expect "# "
+send "exit\r"

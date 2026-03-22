@@ -325,11 +325,12 @@ class OrderbookBot:
                     # we need to infer the original type from the exit order side (Sell exit = Long position)
                     orig_type = "long" if vo['side'] == 'Sell' else "short"
                     
-                    # Fix PnL calculation (without commissions for now, to match the raw backtest edge)
+                    # Fix PnL calculation (with Maker commissions for Bybit: 0.02% * 2 = 0.04% or 0.0004)
                     pnl_pct = (exit_price - entry_price) / entry_price if orig_type == "long" else (entry_price - exit_price) / entry_price
+                    net_pnl = pnl_pct - 0.0004 # Apply Maker fee
                     hold_time = (exit_time - entry_time).total_seconds()
                     
-                    logger.info(f"💰 POSITION CLOSED at {exit_price} | PnL: {pnl_pct*100:.3f}% | Held: {hold_time}s")
+                    logger.info(f"💰 POSITION CLOSED at {exit_price} | PnL: {net_pnl*100:.3f}% | Held: {hold_time}s")
                     
                     # Log to file
                     self.log_paper_trade({
@@ -339,7 +340,7 @@ class OrderbookBot:
                         'exit_time': exit_time,
                         'entry_price': entry_price,
                         'exit_price': exit_price,
-                        'pnl_pct': pnl_pct * 100,
+                        'pnl_pct': net_pnl * 100,
                         'hold_time_sec': hold_time
                     })
                     
