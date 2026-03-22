@@ -271,6 +271,25 @@ class SwingOIBot:
                                 btc_delta_thresh_long = np.percentile(rolling_btc_deltas_5m, 90)
                                 btc_delta_thresh_short = np.percentile(rolling_btc_deltas_5m, 10)
                                 
+                                # Log feature row to CSV
+                                feature_row = {
+                                    'ts': datetime.now().isoformat(),
+                                    'btc_delta': btc_delta,
+                                    'sol_oi_change': sol_bar['oi_change'],
+                                    'sol_liq_buy': sol_bar['liq_buy'],
+                                    'sol_liq_sell': sol_bar['liq_sell']
+                                }
+                                
+                                file_path = "swing_live_features_5m.csv"
+                                write_header = not os.path.exists(file_path) or os.path.getsize(file_path) == 0
+                                try:
+                                    with open(file_path, "a") as f:
+                                        if write_header:
+                                            f.write(",".join(feature_row.keys()) + "\n")
+                                        f.write(",".join([str(v) for v in feature_row.values()]) + "\n")
+                                except Exception as e:
+                                    logger.error(f"Failed to write 5m features to CSV: {e}")
+                                
                                 # LONG ENTRY
                                 if (btc_delta > btc_delta_thresh_long and 
                                     sol_bar['oi_change'] > self.oi_thresh and 
