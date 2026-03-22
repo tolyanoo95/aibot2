@@ -37,14 +37,10 @@ class SwingOIBot:
         self.entry_time = {sym: None for sym in symbols}
         self.target_tp_price = {sym: 0 for sym in symbols}
         self.target_sl_price = {sym: 0 for sym in symbols}
-        self.pending_entry = {sym: None for sym in symbols} # None or {'type': 'long', 'price': 150.0, 'ts': time}
         
-        # Best strategy parameters from 5m backtest (Delay + Limit Orders)
-        self.entry_delay_pct = 0.025 # Wait for 2.5% drop/pump to enter
-        
-        # We will use slightly different TP/SL targets based on symbol
-        self.tp_pct = {"SOLUSDT": 0.025, "AVAXUSDT": 0.025}
-        self.sl_pct = {"SOLUSDT": 0.025, "AVAXUSDT": 0.025}
+        # Best strategy parameters from exact backtest (Momentum / Reverse logic)
+        self.tp_pct = {"SOLUSDT": 0.015, "AVAXUSDT": 0.015}
+        self.sl_pct = {"SOLUSDT": 0.030, "AVAXUSDT": 0.030}
         
         # Symbol-specific thresholds
         self.oi_thresh = {
@@ -228,39 +224,14 @@ class SwingOIBot:
                 if sol_latest:
                     curr_price = sol_latest['close_price']
                     
-                    # 1. Check if we need to enter a pending limit order
-                    if self.pending_entry[symbol] and not self.position[symbol]:
-                        # Expire pending entry after 10 hours (120 * 5m bars)
-                        if (datetime.now() - self.pending_entry[symbol]['ts']).total_seconds() > 10 * 3600:
-                            logger.info(f"⏳ Pending entry expired for {symbol}.")
-                            self.pending_entry[symbol] = None
-                        else:
-                            # Check for fill
-                            if self.pending_entry[symbol]['type'] == 'long' and curr_price <= self.pending_entry[symbol]['price']:
-                                self.position[symbol] = 'long'
-                                self.entry_price[symbol] = self.pending_entry[symbol]['price']
-                                self.entry_time[symbol] = datetime.now()
-                                self.target_tp_price[symbol] = self.entry_price[symbol] * (1 + self.tp_pct[symbol])
-                                self.target_sl_price[symbol] = self.entry_price[symbol] * (1 - self.sl_pct[symbol])
-                                self.pending_entry[symbol] = None
-                                logger.info(f"🟢 FILLED LONG LIMIT on {symbol} at {self.entry_price[symbol]:.2f}. Targets: TP {self.target_tp_price[symbol]:.2f}, SL {self.target_sl_price[symbol]:.2f}")
-                                
-                            elif self.pending_entry[symbol]['type'] == 'short' and curr_price >= self.pending_entry[symbol]['price']:
-                                self.position[symbol] = 'short'
-                                self.entry_price[symbol] = self.pending_entry[symbol]['price']
-                                self.entry_time[symbol] = datetime.now()
-                                self.target_tp_price[symbol] = self.entry_price[symbol] * (1 - self.tp_pct[symbol])
-                                self.target_sl_price[symbol] = self.entry_price[symbol] * (1 + self.sl_pct[symbol])
-                                self.pending_entry[symbol] = None
-                                logger.info(f"🔴 FILLED SHORT LIMIT on {symbol} at {self.entry_price[symbol]:.2f}. Targets: TP {self.target_tp_price[symbol]:.2f}, SL {self.target_sl_price[symbol]:.2f}")
-
                     # 2. Check open positions continuously (Stop Loss / Take Profit can happen anytime)
                     if self.position[symbol]:
                         if self.position[symbol] == "long":
                             if curr_price >= self.target_tp_price[symbol] or curr_price <= self.target_sl_price[symbol]:
                                 # Exit
+                                self.place_market_order(symbol, "Sell", 1.0)
                                 pnl_pct = (curr_price - self.entry_price[symbol]) / self.entry_price[symbol]
-                                net_pnl = pnl_pct - 0.0004 # Limit entry (Maker: 0%), Market exit (Taker: 0.04% avg on Bybit)
+                                net_pnl = pnl_pct - 0.0011 # Market in, Market out (Taker: ~0.055% * 2)
                                 logger.info(f"💰 CLOSED LONG {symbol} at {curr_price} | Net PnL: {net_pnl*100:.2f}%")
                                 
                                 self.log_paper_trade({
@@ -272,8 +243,9 @@ class SwingOIBot:
                                 
                         elif self.position[symbol] == "short":
                             if curr_price <= self.target_tp_price[symbol] or curr_price >= self.target_sl_price[symbol]:
+                                self.place_market_order(symbol, "Buy", 1.0)
                                 pnl_pct = (self.entry_price[symbol] - curr_price) / self.entry_price[symbol]
-                                net_pnl = pnl_pct - 0.0004
+                                net_pnl = pnl_pct - 0.0011
                                 logger.info(f"💰 CLOSED SHORT {symbol} at {curr_price} | Net PnL: {net_pnl*100:.2f}%")
                                 
                                 self.log_paper_trade({
@@ -324,37 +296,32 @@ class SwingOIBot:
                                     except Exception as e:
                                         logger.error(f"Failed to write 5m features to CSV: {e}")
                                     
-                                    # LONG ENTRY
-                                    if (btc_delta > btc_delta_thresh_long and 
+                                    # Momentum / Reverse Logic:
+                                    # If BTC dumps and long liqs happen -> Trend is down -> SHORT
+                                    if (btc_delta < btc_delta_thresh_short and 
                                         sol_bar['oi_change'] > oi_t and 
-                                        sol_bar['liq_buy'] < 5000): # No massive short liquidations creating fake pump
+                                        sol_bar['liq_sell'] < 5000):
                                         
-                                        limit_price = sol_bar['close_price'] * (1 - self.entry_delay_pct)
-                                        logger.info(f"🚀 SWING LONG SIGNAL on {symbol}: BTC Delta {btc_delta:.2f} > {btc_delta_thresh_long:.2f}, OI {sol_bar['oi_change']} > {oi_t}")
-                                        logger.info(f"⏳ Placing LONG Limit Order at {limit_price:.2f} (waiting for {self.entry_delay_pct*100}% dip)")
-                                        
-                                        self.pending_entry[symbol] = {
-                                            'type': 'long',
-                                            'price': limit_price,
-                                            'ts': datetime.now()
-                                        }
-                                        # self.place_limit_order(symbol, "Buy", 1.0, limit_price)
-                                        
-                                    # SHORT ENTRY
-                                    elif (btc_delta < btc_delta_thresh_short and 
-                                          sol_bar['oi_change'] > oi_t and 
-                                          sol_bar['liq_sell'] < 5000):
-                                          
-                                        limit_price = sol_bar['close_price'] * (1 + self.entry_delay_pct)
                                         logger.info(f"🩸 SWING SHORT SIGNAL on {symbol}: BTC Delta {btc_delta:.2f} < {btc_delta_thresh_short:.2f}, OI {sol_bar['oi_change']} > {oi_t}")
-                                        logger.info(f"⏳ Placing SHORT Limit Order at {limit_price:.2f} (waiting for {self.entry_delay_pct*100}% pump)")
+                                        self.place_market_order(symbol, "Sell", 1.0)
+                                        self.position[symbol] = "short"
+                                        self.entry_price[symbol] = sol_bar['close_price']
+                                        self.entry_time[symbol] = datetime.now()
+                                        self.target_tp_price[symbol] = self.entry_price[symbol] * (1 - self.tp_pct[symbol])
+                                        self.target_sl_price[symbol] = self.entry_price[symbol] * (1 + self.sl_pct[symbol])
                                         
-                                        self.pending_entry[symbol] = {
-                                            'type': 'short',
-                                            'price': limit_price,
-                                            'ts': datetime.now()
-                                        }
-                                        # self.place_limit_order(symbol, "Sell", 1.0, limit_price)
+                                    # If BTC pumps and short liqs happen -> Trend is up -> LONG
+                                    elif (btc_delta > btc_delta_thresh_long and 
+                                          sol_bar['oi_change'] > oi_t and 
+                                          sol_bar['liq_buy'] < 5000):
+                                          
+                                        logger.info(f"🚀 SWING LONG SIGNAL on {symbol}: BTC Delta {btc_delta:.2f} > {btc_delta_thresh_long:.2f}, OI {sol_bar['oi_change']} > {oi_t}")
+                                        self.place_market_order(symbol, "Buy", 1.0)
+                                        self.position[symbol] = "long"
+                                        self.entry_price[symbol] = sol_bar['close_price']
+                                        self.entry_time[symbol] = datetime.now()
+                                        self.target_tp_price[symbol] = self.entry_price[symbol] * (1 + self.tp_pct[symbol])
+                                        self.target_sl_price[symbol] = self.entry_price[symbol] * (1 - self.sl_pct[symbol])
                                         
                 await asyncio.sleep(1) # Check continuously
             except Exception as e:
