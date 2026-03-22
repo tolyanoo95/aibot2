@@ -414,7 +414,7 @@ class OrderbookBot:
                         if position_type == "long":
                             pnl_pct = (sol_mid_price - entry_price) / entry_price
                             
-                            exit_cond = pnl_pct >= tp_pct or pnl_pct <= -sl_pct or curr_row['delta_rolling_5_btc'] < (-1 * btc_delta_thresh_long / 2) # Note: we don't have curr_row here, using simplistic logic for live
+                            exit_cond = pnl_pct >= tp_pct or pnl_pct <= -sl_pct
                             # Simplified delta reversal for live
                             if btc_features['delta_10s'] < (-1 * btc_delta_thresh_long / 2):
                                 exit_cond = True
