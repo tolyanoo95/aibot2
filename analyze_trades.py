@@ -5,7 +5,7 @@ sys.path.append('src')
 from backtest_5m_swing import load_data
 
 df = load_data()
-df_march = df[(df.index >= '2026-03-01') & (df.index < '2026-03-22')]
+df_march = df[(df.index >= '2026-02-01') & (df.index < '2026-03-01')]
 
 btc_q = 0.90
 btc_delta_thresh_long = df_march['volume_delta_btc'].quantile(btc_q)

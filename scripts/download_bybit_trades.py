@@ -95,7 +95,7 @@ def process_bybit_trades(files, symbol="AVAXUSDT"):
         import glob
         
         # Find liquidations and OI for this symbol
-        for date_str in pd.date_range(start="2026-03-01", end="2026-03-21").strftime("%Y-%m-%d"):
+        for date_str in pd.date_range(start="2026-02-01", end="2026-03-21").strftime("%Y-%m-%d"):
             y, m, d = date_str.split("-")
             
             liqs_file = f"data/tardis/bybit/liquidations/{y}/{m}/{d}/PERPETUALS.csv.gz"
@@ -128,7 +128,7 @@ def download_all_pairs():
     
     for pair in pairs:
         print(f"--- Downloading {pair} ---")
-        files = download_bybit_trades(symbol=pair, start_date="2026-03-01", end_date="2026-03-21")
+        files = download_bybit_trades(symbol=pair, start_date="2026-02-01", end_date="2026-02-28")
         all_downloaded[pair] = files
         
     for pair in pairs:

@@ -40,11 +40,11 @@ class SwingOIBot:
         self.pending_entry = {sym: None for sym in symbols} # None or {'type': 'long', 'price': 150.0, 'ts': time}
         
         # Best strategy parameters from 5m backtest (Delay + Limit Orders)
-        self.entry_delay_pct = 0.015 # Wait for 1.5% drop/pump to enter
+        self.entry_delay_pct = 0.020 # Wait for 2.0% drop/pump to enter
         
         # We will use slightly different TP/SL targets based on symbol
-        self.tp_pct = {"SOLUSDT": 0.025, "AVAXUSDT": 0.015}
-        self.sl_pct = {"SOLUSDT": 0.040, "AVAXUSDT": 0.030}
+        self.tp_pct = {"SOLUSDT": 0.020, "AVAXUSDT": 0.020}
+        self.sl_pct = {"SOLUSDT": 0.020, "AVAXUSDT": 0.020}
         
         # Symbol-specific thresholds
         self.oi_thresh = {
