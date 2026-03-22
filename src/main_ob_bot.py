@@ -382,6 +382,7 @@ class OrderbookBot:
                         # Save feature row for backtesting
                         feature_row = {
                             'ts': datetime.now().isoformat(),
+                            'sol_mid_price': sol_mid_price,
                             'btc_delta_10s': btc_features['delta_10s'],
                             'sol_obi_10': sol_features['obi_10'],
                             'sol_bid_wall_z': bid_wall_z,
