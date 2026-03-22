@@ -32,15 +32,23 @@ class SwingOIBot:
         
         self.running = False
         
-        # State for paper trading
-        self.position = None # None, 'long', 'short'
-        self.entry_price = 0
-        self.entry_time = None
+        self.position = {sym: None for sym in symbols} # None, 'long', 'short'
+        self.entry_price = {sym: 0 for sym in symbols}
+        self.entry_time = {sym: None for sym in symbols}
+        self.target_tp_price = {sym: 0 for sym in symbols}
+        self.target_sl_price = {sym: 0 for sym in symbols}
+        self.pending_entry = {sym: None for sym in symbols} # None or {'type': 'long', 'price': 150.0, 'ts': time}
         
-        # Best strategy parameters from 5m backtest
-        self.tp_pct = 0.02    # 2.0% Take Profit
-        self.sl_pct = 0.008   # 0.8% Stop Loss
-        self.oi_thresh = 5000 # Need 5000+ new SOL entering the market
+        # Best strategy parameters from 5m backtest (Delay + Limit Orders)
+        self.entry_delay_pct = 0.015 # Wait for 1.5% drop/pump to enter
+        self.tp_pct = 0.020    # 2.0% Take Profit
+        self.sl_pct = 0.020    # 2.0% Stop Loss
+        
+        # Symbol-specific thresholds
+        self.oi_thresh = {
+            "SOLUSDT": 5000,
+            "AVAXUSDT": 500
+        }
         
         # To track candles
         self.last_candle_ts = 0
@@ -158,10 +166,10 @@ class SwingOIBot:
             'oi_change': oi_change
         }
 
-    def place_market_order(self, symbol, side, qty):
-        """Places a Market order (We pay Taker fee, but guarantee execution)"""
+    def place_limit_order(self, symbol, side, qty, price):
+        """Places a Limit order"""
         if not self.session:
-            logger.info(f"🟢 [DRY RUN] Would place MARKET {side} order for {qty} {symbol}")
+            logger.info(f"🟢 [DRY RUN] Would place LIMIT {side} order for {qty} {symbol} at {price:.2f}")
             return "dry_run_id"
             
         try:
@@ -169,13 +177,15 @@ class SwingOIBot:
                 category="linear",
                 symbol=symbol,
                 side=side,
-                orderType="Market",
-                qty=str(qty)
+                orderType="Limit",
+                qty=str(qty),
+                price=str(price),
+                timeInForce="GTC"
             )
-            logger.info(f"🟢 API Market Order Placed: {resp}")
+            logger.info(f"🟢 API Limit Order Placed: {resp}")
             return resp.get('result', {}).get('orderId')
         except Exception as e:
-            logger.error(f"🔴 Failed to place Market order: {e}")
+            logger.error(f"🔴 Failed to place Limit order: {e}")
             return None
 
     def log_paper_trade(self, trade_data):
@@ -211,40 +221,65 @@ class SwingOIBot:
                 current_second = datetime.now().second
                 
                 # Check positions continuously (Stop Loss / Take Profit can happen anytime)
-                sol_latest = self.calculate_5m_bar("SOLUSDT")
-                if self.position and sol_latest:
+            for symbol in [s for s in self.symbols if s != "BTCUSDT"]:
+                sol_latest = self.calculate_5m_bar(symbol)
+                if sol_latest:
                     curr_price = sol_latest['close_price']
                     
-                    if self.position == "long":
-                        pnl_pct = (curr_price - self.entry_price) / self.entry_price
-                        if pnl_pct >= self.tp_pct or pnl_pct <= -self.sl_pct:
-                            # Exit Market
-                            self.place_market_order("SOLUSDT", "Sell", 1.0)
-                            
-                            # Calculate net PnL after TWO Taker fees (0.055% * 2 = 0.11%)
-                            net_pnl = pnl_pct - 0.0011
-                            logger.info(f"💰 CLOSED LONG at {curr_price} | Net PnL: {net_pnl*100:.2f}%")
-                            
-                            self.log_paper_trade({
-                                'symbol': 'SOLUSDT', 'type': 'long', 'entry_time': self.entry_time,
-                                'exit_time': datetime.now(), 'entry_price': self.entry_price,
-                                'exit_price': curr_price, 'net_pnl_pct': net_pnl * 100
-                            })
-                            self.position = None
-                            
-                    elif self.position == "short":
-                        pnl_pct = (self.entry_price - curr_price) / self.entry_price
-                        if pnl_pct >= self.tp_pct or pnl_pct <= -self.sl_pct:
-                            self.place_market_order("SOLUSDT", "Buy", 1.0)
-                            net_pnl = pnl_pct - 0.0011
-                            logger.info(f"💰 CLOSED SHORT at {curr_price} | Net PnL: {net_pnl*100:.2f}%")
-                            
-                            self.log_paper_trade({
-                                'symbol': 'SOLUSDT', 'type': 'short', 'entry_time': self.entry_time,
-                                'exit_time': datetime.now(), 'entry_price': self.entry_price,
-                                'exit_price': curr_price, 'net_pnl_pct': net_pnl * 100
-                            })
-                            self.position = None
+                    # 1. Check if we need to enter a pending limit order
+                    if self.pending_entry[symbol] and not self.position[symbol]:
+                        # Expire pending entry after 10 hours (120 * 5m bars)
+                        if (datetime.now() - self.pending_entry[symbol]['ts']).total_seconds() > 10 * 3600:
+                            logger.info(f"⏳ Pending entry expired for {symbol}.")
+                            self.pending_entry[symbol] = None
+                        else:
+                            # Check for fill
+                            if self.pending_entry[symbol]['type'] == 'long' and curr_price <= self.pending_entry[symbol]['price']:
+                                self.position[symbol] = 'long'
+                                self.entry_price[symbol] = self.pending_entry[symbol]['price']
+                                self.entry_time[symbol] = datetime.now()
+                                self.target_tp_price[symbol] = self.entry_price[symbol] * (1 + self.tp_pct)
+                                self.target_sl_price[symbol] = self.entry_price[symbol] * (1 - self.sl_pct)
+                                self.pending_entry[symbol] = None
+                                logger.info(f"🟢 FILLED LONG LIMIT on {symbol} at {self.entry_price[symbol]:.2f}. Targets: TP {self.target_tp_price[symbol]:.2f}, SL {self.target_sl_price[symbol]:.2f}")
+                                
+                            elif self.pending_entry[symbol]['type'] == 'short' and curr_price >= self.pending_entry[symbol]['price']:
+                                self.position[symbol] = 'short'
+                                self.entry_price[symbol] = self.pending_entry[symbol]['price']
+                                self.entry_time[symbol] = datetime.now()
+                                self.target_tp_price[symbol] = self.entry_price[symbol] * (1 - self.tp_pct)
+                                self.target_sl_price[symbol] = self.entry_price[symbol] * (1 + self.sl_pct)
+                                self.pending_entry[symbol] = None
+                                logger.info(f"🔴 FILLED SHORT LIMIT on {symbol} at {self.entry_price[symbol]:.2f}. Targets: TP {self.target_tp_price[symbol]:.2f}, SL {self.target_sl_price[symbol]:.2f}")
+
+                    # 2. Check open positions continuously (Stop Loss / Take Profit can happen anytime)
+                    if self.position[symbol]:
+                        if self.position[symbol] == "long":
+                            if curr_price >= self.target_tp_price[symbol] or curr_price <= self.target_sl_price[symbol]:
+                                # Exit
+                                pnl_pct = (curr_price - self.entry_price[symbol]) / self.entry_price[symbol]
+                                net_pnl = pnl_pct - 0.0004 # Limit entry (Maker: 0%), Market exit (Taker: 0.04% avg on Bybit)
+                                logger.info(f"💰 CLOSED LONG {symbol} at {curr_price} | Net PnL: {net_pnl*100:.2f}%")
+                                
+                                self.log_paper_trade({
+                                    'symbol': symbol, 'type': 'long', 'entry_time': self.entry_time[symbol],
+                                    'exit_time': datetime.now(), 'entry_price': self.entry_price[symbol],
+                                    'exit_price': curr_price, 'net_pnl_pct': net_pnl * 100
+                                })
+                                self.position[symbol] = None
+                                
+                        elif self.position[symbol] == "short":
+                            if curr_price <= self.target_tp_price[symbol] or curr_price >= self.target_sl_price[symbol]:
+                                pnl_pct = (self.entry_price[symbol] - curr_price) / self.entry_price[symbol]
+                                net_pnl = pnl_pct - 0.0004
+                                logger.info(f"💰 CLOSED SHORT {symbol} at {curr_price} | Net PnL: {net_pnl*100:.2f}%")
+                                
+                                self.log_paper_trade({
+                                    'symbol': symbol, 'type': 'short', 'entry_time': self.entry_time[symbol],
+                                    'exit_time': datetime.now(), 'entry_price': self.entry_price[symbol],
+                                    'exit_price': curr_price, 'net_pnl_pct': net_pnl * 100
+                                })
+                                self.position[symbol] = None
                 
                 # Check for Entry ONLY exactly on the 5-minute close (e.g. at second 1-2 of the new candle)
                 if current_minute % 5 == 0 and current_second < 5:
@@ -255,62 +290,69 @@ class SwingOIBot:
                         self.last_candle_ts = candle_ts
                         
                         btc_bar = self.calculate_5m_bar("BTCUSDT")
-                        sol_bar = self.calculate_5m_bar("SOLUSDT")
-                        
-                        if btc_bar and sol_bar:
-                            btc_delta = btc_bar['volume_delta']
-                            rolling_btc_deltas_5m.append(btc_delta)
-                            
-                            # Keep last ~3 days of 5m bars for dynamic percentiles (864 bars)
-                            if len(rolling_btc_deltas_5m) > 800:
-                                rolling_btc_deltas_5m = rolling_btc_deltas_5m[-800:]
+                        for symbol in [s for s in self.symbols if s != "BTCUSDT"]:
+                            sol_bar = self.calculate_5m_bar(symbol)
+                            if btc_bar and sol_bar:
+                                # We only process logic if we have both BTC and the target coin data
+                                oi_t = self.oi_thresh.get(symbol, 1000)
                                 
-                            logger.info(f"📊 5m Close | BTC Delta: {btc_delta:.2f} | SOL OI Change: {sol_bar['oi_change']:.1f} | Liq: {sol_bar['liq_buy']}/{sol_bar['liq_sell']}")
-                            
-                            if len(rolling_btc_deltas_5m) > 10 and not self.position:
-                                btc_delta_thresh_long = np.percentile(rolling_btc_deltas_5m, 90)
-                                btc_delta_thresh_short = np.percentile(rolling_btc_deltas_5m, 10)
+                                logger.info(f"📊 5m Close | BTC Delta: {btc_delta:.2f} | {symbol} OI Change: {sol_bar['oi_change']:.1f} | Liq: {sol_bar['liq_buy']}/{sol_bar['liq_sell']}")
                                 
-                                # Log feature row to CSV
-                                feature_row = {
-                                    'ts': datetime.now().isoformat(),
-                                    'btc_delta': btc_delta,
-                                    'sol_oi_change': sol_bar['oi_change'],
-                                    'sol_liq_buy': sol_bar['liq_buy'],
-                                    'sol_liq_sell': sol_bar['liq_sell']
-                                }
-                                
-                                file_path = "swing_live_features_5m.csv"
-                                write_header = not os.path.exists(file_path) or os.path.getsize(file_path) == 0
-                                try:
-                                    with open(file_path, "a") as f:
-                                        if write_header:
-                                            f.write(",".join(feature_row.keys()) + "\n")
-                                        f.write(",".join([str(v) for v in feature_row.values()]) + "\n")
-                                except Exception as e:
-                                    logger.error(f"Failed to write 5m features to CSV: {e}")
-                                
-                                # LONG ENTRY
-                                if (btc_delta > btc_delta_thresh_long and 
-                                    sol_bar['oi_change'] > self.oi_thresh and 
-                                    sol_bar['liq_sell'] < 5000): # No massive long liquidations killing the trend
+                                if len(rolling_btc_deltas_5m) > 10 and not self.position[symbol]:
+                                    btc_delta_thresh_long = np.percentile(rolling_btc_deltas_5m, 90)
+                                    btc_delta_thresh_short = np.percentile(rolling_btc_deltas_5m, 10)
                                     
-                                    logger.info(f"🚀 SWING LONG SIGNAL on SOL: BTC Delta {btc_delta:.2f} > {btc_delta_thresh_long:.2f}, OI {sol_bar['oi_change']} > {self.oi_thresh}")
-                                    self.place_market_order("SOLUSDT", "Buy", 1.0)
-                                    self.position = "long"
-                                    self.entry_price = sol_bar['close_price']
-                                    self.entry_time = datetime.now()
+                                    # Log feature row to CSV
+                                    feature_row = {
+                                        'ts': datetime.now().isoformat(),
+                                        'symbol': symbol,
+                                        'btc_delta': btc_delta,
+                                        'oi_change': sol_bar['oi_change'],
+                                        'liq_buy': sol_bar['liq_buy'],
+                                        'liq_sell': sol_bar['liq_sell']
+                                    }
                                     
-                                # SHORT ENTRY
-                                elif (btc_delta < btc_delta_thresh_short and 
-                                      sol_bar['oi_change'] > self.oi_thresh and 
-                                      sol_bar['liq_buy'] < 5000):
-                                      
-                                    logger.info(f"🩸 SWING SHORT SIGNAL on SOL: BTC Delta {btc_delta:.2f} < {btc_delta_thresh_short:.2f}, OI {sol_bar['oi_change']} > {self.oi_thresh}")
-                                    self.place_market_order("SOLUSDT", "Sell", 1.0)
-                                    self.position = "short"
-                                    self.entry_price = sol_bar['close_price']
-                                    self.entry_time = datetime.now()
+                                    file_path = "swing_live_features_5m.csv"
+                                    write_header = not os.path.exists(file_path) or os.path.getsize(file_path) == 0
+                                    try:
+                                        with open(file_path, "a") as f:
+                                            if write_header:
+                                                f.write(",".join(feature_row.keys()) + "\n")
+                                            f.write(",".join([str(v) for v in feature_row.values()]) + "\n")
+                                    except Exception as e:
+                                        logger.error(f"Failed to write 5m features to CSV: {e}")
+                                    
+                                    # LONG ENTRY
+                                    if (btc_delta > btc_delta_thresh_long and 
+                                        sol_bar['oi_change'] > oi_t and 
+                                        sol_bar['liq_buy'] < 5000): # No massive short liquidations creating fake pump
+                                        
+                                        limit_price = sol_bar['close_price'] * (1 - self.entry_delay_pct)
+                                        logger.info(f"🚀 SWING LONG SIGNAL on {symbol}: BTC Delta {btc_delta:.2f} > {btc_delta_thresh_long:.2f}, OI {sol_bar['oi_change']} > {oi_t}")
+                                        logger.info(f"⏳ Placing LONG Limit Order at {limit_price:.2f} (waiting for {self.entry_delay_pct*100}% dip)")
+                                        
+                                        self.pending_entry[symbol] = {
+                                            'type': 'long',
+                                            'price': limit_price,
+                                            'ts': datetime.now()
+                                        }
+                                        # self.place_limit_order(symbol, "Buy", 1.0, limit_price)
+                                        
+                                    # SHORT ENTRY
+                                    elif (btc_delta < btc_delta_thresh_short and 
+                                          sol_bar['oi_change'] > oi_t and 
+                                          sol_bar['liq_sell'] < 5000):
+                                          
+                                        limit_price = sol_bar['close_price'] * (1 + self.entry_delay_pct)
+                                        logger.info(f"🩸 SWING SHORT SIGNAL on {symbol}: BTC Delta {btc_delta:.2f} < {btc_delta_thresh_short:.2f}, OI {sol_bar['oi_change']} > {oi_t}")
+                                        logger.info(f"⏳ Placing SHORT Limit Order at {limit_price:.2f} (waiting for {self.entry_delay_pct*100}% pump)")
+                                        
+                                        self.pending_entry[symbol] = {
+                                            'type': 'short',
+                                            'price': limit_price,
+                                            'ts': datetime.now()
+                                        }
+                                        # self.place_limit_order(symbol, "Sell", 1.0, limit_price)
 
                 await asyncio.sleep(1) # Check continuously
             except Exception as e:
@@ -336,8 +378,8 @@ if __name__ == "__main__":
     
     logger.warning("Running 5m Swing Bot in DRY RUN (Paper) mode.")
         
-    bot = SwingOIBot(
-        ["BTCUSDT", "SOLUSDT"],
+        bot = SwingOIBot(
+        ["BTCUSDT", "SOLUSDT", "AVAXUSDT"],
         api_key=None,
         api_secret=None,
         testnet=False # Mainnet for real data
