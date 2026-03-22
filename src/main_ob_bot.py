@@ -420,6 +420,12 @@ class OrderbookBot:
                             pnl_pct = (sol_mid_price - entry_price) / entry_price
                             
                             exit_cond = pnl_pct >= tp_pct or pnl_pct <= -sl_pct
+                            
+                            # Micro-structure SL: Wall disappeared
+                            if bid_wall_z < 0:
+                                exit_cond = True
+                                logger.info("Exiting Long early due to Bid Wall disappearance")
+                                
                             # Simplified delta reversal for live
                             if btc_features['delta_10s'] < (-1 * btc_delta_thresh_long / 2):
                                 exit_cond = True
@@ -439,6 +445,12 @@ class OrderbookBot:
                             pnl_pct = (entry_price - sol_mid_price) / entry_price
                             
                             exit_cond = pnl_pct >= tp_pct or pnl_pct <= -sl_pct
+                            
+                            # Micro-structure SL: Wall disappeared
+                            if ask_wall_z < 0:
+                                exit_cond = True
+                                logger.info("Exiting Short early due to Ask Wall disappearance")
+                                
                             if btc_features['delta_10s'] > (-1 * btc_delta_thresh_short / 2):
                                 exit_cond = True
                                 logger.info("Exiting Short due to BTC Delta Reversal")
