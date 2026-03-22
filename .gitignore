@@ -5,6 +5,10 @@ __pycache__/
 venv/
 env/
 
+# logs
+live_features.csv
+paper_trades.json
+
 # models
 models/*.json
 models/*.pkl
