@@ -359,17 +359,16 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv()
     
-    api_key = os.getenv("BYBIT_TESTNET_API_KEY")
-    api_secret = os.getenv("BYBIT_TESTNET_API_SECRET")
+    # We will connect to MAINNET for realistic orderbook data
+    # but we will NOT pass API keys to ensure it remains strictly in DRY RUN / Virtual mode
     
-    if not api_key:
-        logger.warning("No BYBIT_TESTNET_API_KEY found in .env, running in DRY RUN mode without real orders.")
+    logger.warning("Running on MAINNET data streams, but in VIRTUAL (Paper) execution mode. No real orders will be placed.")
         
     bot = OrderbookBot(
         ["BTCUSDT", "SOLUSDT"],
-        api_key=api_key,
-        api_secret=api_secret,
-        testnet=True # Assuming you want to use testnet for real paper trading
+        api_key=None,
+        api_secret=None,
+        testnet=False # Force Mainnet to get real liquidity data
     )
     try:
         bot.start()
