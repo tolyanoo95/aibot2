@@ -2,6 +2,8 @@
 .env
 __pycache__/
 *.pyc
+venv/
+env/
 
 # models
 models/*.json
