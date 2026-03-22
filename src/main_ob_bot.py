@@ -100,25 +100,30 @@ class OrderbookBot:
 
     def handle_liquidation_message(self, msg):
         try:
-            data = msg.get("data", {})
-            symbol = data.get("symbol")
-            if not symbol or symbol not in self.symbols:
-                return
+            data = msg.get("data", [])
+            # In all_liquidation_stream, data is usually a list of dicts, unlike orderbook
+            if isinstance(data, dict):
+                data = [data]
                 
-            price = float(data.get("price", 0))
-            size = float(data.get("size", 0))
-            side = data.get("side") # Buy or Sell
-            ts = int(data.get("updatedTime", int(datetime.now().timestamp()*1000)))
-            
-            self.liquidations_history[symbol].append({
-                'price': price,
-                'size': size,
-                'side': side,
-                'ts': ts
-            })
-            
-            if len(self.liquidations_history[symbol]) > 1000:
-                self.liquidations_history[symbol] = self.liquidations_history[symbol][-1000:]
+            for item in data:
+                symbol = item.get("symbol")
+                if not symbol or symbol not in self.symbols:
+                    continue
+                    
+                price = float(item.get("price", 0))
+                size = float(item.get("size", 0))
+                side = item.get("side") # Buy or Sell
+                ts = int(item.get("updatedTime", int(datetime.now().timestamp()*1000)))
+                
+                self.liquidations_history[symbol].append({
+                    'price': price,
+                    'size': size,
+                    'side': side,
+                    'ts': ts
+                })
+                
+                if len(self.liquidations_history[symbol]) > 1000:
+                    self.liquidations_history[symbol] = self.liquidations_history[symbol][-1000:]
         except Exception as e:
             logger.error(f"Error handling liquidation msg: {e}")
 
