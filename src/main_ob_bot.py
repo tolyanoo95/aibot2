@@ -326,9 +326,14 @@ class OrderbookBot:
                     orig_type = "long" if vo['side'] == 'Sell' else "short"
                     
                     pnl_pct = (exit_price - entry_price) / entry_price if orig_type == "long" else (entry_price - exit_price) / entry_price
+                    
+                    # Apply Maker Fees (0.02% entry + 0.02% exit = 0.04% total)
+                    fee_pct = 0.0004
+                    pnl_pct = pnl_pct - fee_pct
+                    
                     hold_time = (exit_time - entry_time).total_seconds()
                     
-                    logger.info(f"💰 POSITION CLOSED at {exit_price} | PnL: {pnl_pct*100:.3f}% | Held: {hold_time}s")
+                    logger.info(f"💰 POSITION CLOSED at {exit_price} | Net PnL: {pnl_pct*100:.3f}% (After 0.04% fee) | Held: {hold_time}s")
                     
                     # Log to file
                     self.log_paper_trade({
