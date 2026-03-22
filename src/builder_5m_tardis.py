@@ -86,6 +86,7 @@ def build_5m_features():
     
     # We have 12 days of data from 2025 (1st of each month)
     months = [f"2025-{str(i).zfill(2)}-01" for i in range(1, 13)]
+    months.append("2026-03-20") # Add the specific fresh day we have!
     
     for symbol in ["BTCUSDT", "SOLUSDT"]:
         all_bars = []
