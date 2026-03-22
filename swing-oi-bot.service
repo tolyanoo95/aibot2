@@ -1,0 +1,15 @@
+[Unit]
+Description=5m Swing Trading Bot with Open Interest Filter (Paper Trading)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/swing-bot
+ExecStart=/root/swing-bot/venv/bin/python src/main_swing_oi_bot.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
