@@ -483,6 +483,15 @@ class OrderbookBot:
             )
             
             try:
+                # In Pybit V5, the correct method for liquidations is all_liquidation_stream
+                self.ws.all_liquidation_stream(
+                    symbol=symbol,
+                    callback=self.handle_liquidation_message
+                )
+            except Exception as e:
+                logger.error(f"Could not subscribe to liquidation stream for {symbol}: {e}")
+                
+            try:
                 self.ws.ticker_stream(
                     symbol=symbol,
                     callback=self.handle_ticker_message

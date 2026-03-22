@@ -153,6 +153,11 @@ def run_backtest_hyp_c(df, fee_pct=0, tp_pct=0.006, sl_pct=0.003, obi_thresh=0.1
                 
                 exit_cond = pnl_pct >= tp_pct or pnl_pct <= -sl_pct or curr_row['delta_rolling_5_btc'] < (-1 * btc_delta_thresh_long / 2)
                 
+                # Micro-structure Stop Loss (Wall disappears)
+                # If the wall we leaned on is gone (z-score drops below 0), get out early
+                if curr_row['bid_wall_z_sol'] < 0:
+                    exit_cond = True
+                    
                 # Dynamic Timeout Exit (e.g. 3 bars = 30 seconds)
                 if bars_held >= timeout_bars and curr_row['obi_10_sol'] < 0:
                     exit_cond = True
@@ -166,6 +171,10 @@ def run_backtest_hyp_c(df, fee_pct=0, tp_pct=0.006, sl_pct=0.003, obi_thresh=0.1
                 pnl_pct = (entry_price - curr_row['close_price_sol']) / entry_price
                 
                 exit_cond = pnl_pct >= tp_pct or pnl_pct <= -sl_pct or curr_row['delta_rolling_5_btc'] > (-1 * btc_delta_thresh_short / 2)
+                
+                # Micro-structure Stop Loss (Wall disappears)
+                if curr_row['ask_wall_z_sol'] < 0:
+                    exit_cond = True
                 
                 # Dynamic Timeout Exit
                 if bars_held >= timeout_bars and curr_row['obi_10_sol'] > 0:
