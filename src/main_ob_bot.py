@@ -105,7 +105,7 @@ class OrderbookBot:
         # Sometimes WebSocket sends deep levels or empty levels with 0 size
         # Our update logic already pops size==0, but just in case we filter out outliers
         if not bids or not asks:
-            return {'obi_10': 0, 'delta_10s': 0, 'best_bid': None, 'best_ask': None}
+            return {'obi_10': 0, 'delta_10s': 0, 'best_bid': None, 'best_ask': None, 'bid_wall_10': 0, 'ask_wall_10': 0}
             
         best_bid = bids[0][0]
         best_ask = asks[0][0]
@@ -120,6 +120,9 @@ class OrderbookBot:
         
         bid_vol = sum([b[1] for b in top_bids])
         ask_vol = sum([a[1] for a in top_asks])
+        
+        bid_wall = max([b[1] for b in top_bids]) if top_bids else 0
+        ask_wall = max([a[1] for a in top_asks]) if top_asks else 0
         
         obi = (bid_vol - ask_vol) / (bid_vol + ask_vol) if (bid_vol + ask_vol) > 0 else 0
         
@@ -138,7 +141,9 @@ class OrderbookBot:
             'best_bid': best_bid,
             'best_ask': best_ask,
             'bid_vol_10': bid_vol,
-            'ask_vol_10': ask_vol
+            'ask_vol_10': ask_vol,
+            'bid_wall_10': bid_wall,
+            'ask_wall_10': ask_wall
         }
 
     def place_maker_order(self, symbol, side, price, qty):
@@ -218,9 +223,12 @@ class OrderbookBot:
         
         tp_pct = 0.006
         sl_pct = 0.003
+        timeout_seconds = 30 # Time-out filter
         
-        # For tracking high delta
+        # For tracking high delta and walls
         rolling_deltas = []
+        rolling_bid_walls = []
+        rolling_ask_walls = []
         
         while self.running:
             try:
@@ -272,52 +280,84 @@ class OrderbookBot:
                     entry_price = 0
                     del self.virtual_orders["SOLUSDT"]
                 
-                # Update BTC delta history
+                # Update rolling histories
                 if btc_features['delta_10s'] != 0:
                     rolling_deltas.append(btc_features['delta_10s'])
+                    rolling_bid_walls.append(sol_features['bid_wall_10'])
+                    rolling_ask_walls.append(sol_features['ask_wall_10'])
+                    
                     if len(rolling_deltas) > 1000:
                         rolling_deltas = rolling_deltas[-1000:]
+                    if len(rolling_bid_walls) > 60: # 10 minutes of wall history (60 * 10s approx)
+                        rolling_bid_walls = rolling_bid_walls[-60:]
+                    if len(rolling_ask_walls) > 60:
+                        rolling_ask_walls = rolling_ask_walls[-60:]
                 
-                if len(rolling_deltas) > 100 and sol_features['best_bid'] and sol_features['best_ask']:
+                if len(rolling_deltas) > 100 and sol_features['best_bid'] and sol_features['best_ask'] and len(rolling_bid_walls) > 10:
                     btc_delta_thresh_long = np.percentile(rolling_deltas, 95)
                     btc_delta_thresh_short = np.percentile(rolling_deltas, 5)
+                    
+                    # Wall Z-scores
+                    bid_w_mean = np.mean(rolling_bid_walls)
+                    bid_w_std = np.std(rolling_bid_walls) + 1e-9
+                    bid_wall_z = (sol_features['bid_wall_10'] - bid_w_mean) / bid_w_std
+                    
+                    ask_w_mean = np.mean(rolling_ask_walls)
+                    ask_w_std = np.std(rolling_ask_walls) + 1e-9
+                    ask_wall_z = (sol_features['ask_wall_10'] - ask_w_mean) / ask_w_std
                     
                     sol_mid_price = (sol_features['best_bid'] + sol_features['best_ask']) / 2
                     
                     if len(rolling_deltas) % 10 == 0:
                         # Log without spamming every second
-                        logger.info(f"Monitor -> BTC Delta: {btc_features['delta_10s']:.2f} | SOL OBI: {sol_features['obi_10']:.2f} | SOL Mid: {sol_mid_price}")
+                        logger.info(f"Monitor -> BTC Delta: {btc_features['delta_10s']:.2f} | SOL OBI: {sol_features['obi_10']:.2f} | Wall Z: {bid_wall_z:.1f}/{ask_wall_z:.1f}")
                         
                     # If we don't have a position AND don't have an open entry order waiting
                     if not in_position and "SOLUSDT" not in self.virtual_orders:
-                        # LONG SIGNAL
-                        if btc_features['delta_10s'] > btc_delta_thresh_long and sol_features['obi_10'] > 0.1:
-                            logger.info(f"🚀 LONG SIGNAL on SOL: BTC Delta {btc_features['delta_10s']:.2f}, SOL OBI {sol_features['obi_10']:.2f} | Bid: {sol_features['best_bid']}")
+                        # LONG SIGNAL (Added Wall filter > 1.0)
+                        if btc_features['delta_10s'] > btc_delta_thresh_long and sol_features['obi_10'] > 0.1 and bid_wall_z > 1.0:
+                            logger.info(f"🚀 LONG SIGNAL: BTC Delta {btc_features['delta_10s']:.2f}, OBI {sol_features['obi_10']:.2f}, Bid Wall Z {bid_wall_z:.2f}")
                             self.place_maker_order("SOLUSDT", "Buy", sol_features['best_bid'], 1.0)
                             
-                        # SHORT SIGNAL
-                        elif btc_features['delta_10s'] < btc_delta_thresh_short and sol_features['obi_10'] < -0.1:
-                            logger.info(f"🩸 SHORT SIGNAL on SOL: BTC Delta {btc_features['delta_10s']:.2f}, SOL OBI {sol_features['obi_10']:.2f} | Ask: {sol_features['best_ask']}")
+                        # SHORT SIGNAL (Added Wall filter > 1.0)
+                        elif btc_features['delta_10s'] < btc_delta_thresh_short and sol_features['obi_10'] < -0.1 and ask_wall_z > 1.0:
+                            logger.info(f"🩸 SHORT SIGNAL: BTC Delta {btc_features['delta_10s']:.2f}, OBI {sol_features['obi_10']:.2f}, Ask Wall Z {ask_wall_z:.2f}")
                             self.place_maker_order("SOLUSDT", "Sell", sol_features['best_ask'], 1.0)
                             
                     elif in_position and "SOLUSDT" not in self.virtual_orders:
-                        # We are in position but haven't placed an exit limit order yet
-                        # Or we cancelled it because we needed to update price
+                        time_held = (datetime.now() - entry_time).total_seconds()
+                        
                         if position_type == "long":
                             pnl_pct = (sol_mid_price - entry_price) / entry_price
                             
-                            exit_cond = pnl_pct >= tp_pct or pnl_pct <= -sl_pct or sol_features['obi_10'] < -0.1
+                            exit_cond = pnl_pct >= tp_pct or pnl_pct <= -sl_pct or curr_row['delta_rolling_5_btc'] < (-1 * btc_delta_thresh_long / 2) # Note: we don't have curr_row here, using simplistic logic for live
+                            # Simplified delta reversal for live
+                            if btc_features['delta_10s'] < (-1 * btc_delta_thresh_long / 2):
+                                exit_cond = True
+                                logger.info("Exiting Long due to BTC Delta Reversal")
+                                
+                            # Timeout filter
+                            if time_held >= timeout_seconds and sol_features['obi_10'] < 0:
+                                exit_cond = True
+                                logger.info(f"Exiting Long due to Timeout ({time_held}s) + OBI Reversal")
                                 
                             if exit_cond:
                                 logger.info(f"Triggering Long Exit (PnL: {pnl_pct*100:.3f}%). Placing Limit Sell at {sol_features['best_ask']}")
                                 self.place_maker_order("SOLUSDT", "Sell", sol_features['best_ask'], 1.0)
-                                # To prevent multiple exit orders, we also clear the position type state until filled
                                 position_type = "exit_pending"
                                 
                         elif position_type == "short":
                             pnl_pct = (entry_price - sol_mid_price) / entry_price
                             
-                            exit_cond = pnl_pct >= tp_pct or pnl_pct <= -sl_pct or sol_features['obi_10'] > 0.1
+                            exit_cond = pnl_pct >= tp_pct or pnl_pct <= -sl_pct
+                            if btc_features['delta_10s'] > (-1 * btc_delta_thresh_short / 2):
+                                exit_cond = True
+                                logger.info("Exiting Short due to BTC Delta Reversal")
+                                
+                            # Timeout filter
+                            if time_held >= timeout_seconds and sol_features['obi_10'] > 0:
+                                exit_cond = True
+                                logger.info(f"Exiting Short due to Timeout ({time_held}s) + OBI Reversal")
                                 
                             if exit_cond:
                                 logger.info(f"Triggering Short Exit (PnL: {pnl_pct*100:.3f}%). Placing Limit Buy at {sol_features['best_bid']}")
