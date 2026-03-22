@@ -96,7 +96,7 @@ def build_5m_features():
     # Also we now have contiguous data from Mar 15 to Mar 21 2026 in the new nested directory format
     months.extend(["2026-03-15", "2026-03-16", "2026-03-17", "2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21"])
     
-    for symbol in ["BTCUSDT", "SOLUSDT"]:
+    for symbol in ["BTCUSDT", "SOLUSDT", "AVAXUSDT"]:
         all_bars = []
         for date_str in tqdm(months, desc=f"Processing {symbol}"):
             y, m, d = date_str.split("-")

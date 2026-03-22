@@ -380,7 +380,7 @@ if __name__ == "__main__":
     
     logger.warning("Running 5m Swing Bot in DRY RUN (Paper) mode.")
         
-        bot = SwingOIBot(
+    bot = SwingOIBot(
         ["BTCUSDT", "SOLUSDT", "AVAXUSDT"],
         api_key=None,
         api_secret=None,

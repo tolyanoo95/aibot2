@@ -37,7 +37,7 @@ FEE_PCT = 0.04  # 0.04% round trip (limit orders)
 
 def compute_indicators(df_15m: pd.DataFrame) -> dict:
     """Compute all needed indicators from 15m OHLCV data."""
-    htf = df_15m.resample("240min").agg(
+    htf = df_15m.resample("240min", label="right", closed="right").agg(
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
     ).dropna()
 
