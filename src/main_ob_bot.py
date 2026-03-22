@@ -398,7 +398,16 @@ class OrderbookBot:
                         }
                         
                         file_path = "live_features.csv"
-                        write_header = not os.path.exists(file_path)
+                        write_header = not os.path.exists(file_path) or os.path.getsize(file_path) == 0
+                        
+                        # Fix missing header for mid_price if the file already existed before we added it
+                        try:
+                            with open(file_path, "r") as f:
+                                first_line = f.readline()
+                                if "sol_mid_price" not in first_line:
+                                    write_header = True
+                        except Exception:
+                            pass
                         try:
                             with open(file_path, "a") as f:
                                 if write_header:

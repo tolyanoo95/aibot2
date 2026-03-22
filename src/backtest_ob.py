@@ -236,7 +236,7 @@ def optimize_hyp_c():
                     for t_bars in timeout_bars_list:
                         res = run_backtest_hyp_c(
                             df, 
-                            fee_pct=0, # Still Assuming Maker orders to find pure edge first
+                            fee_pct=0.0004, # Included Maker fee 0.04% for round-trip!
                             tp_pct=tp, 
                             sl_pct=sl, 
                             obi_thresh=obi, 
