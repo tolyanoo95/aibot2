@@ -483,14 +483,6 @@ class OrderbookBot:
             )
             
             try:
-                self.ws.liquidation_stream(
-                    symbol=symbol,
-                    callback=self.handle_liquidation_message
-                )
-            except Exception as e:
-                logger.error(f"Could not subscribe to liquidation stream for {symbol}: {e}")
-                
-            try:
                 self.ws.ticker_stream(
                     symbol=symbol,
                     callback=self.handle_ticker_message
