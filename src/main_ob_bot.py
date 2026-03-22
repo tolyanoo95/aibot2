@@ -29,6 +29,8 @@ class OrderbookBot:
         
         self.orderbooks = {sym: {'bids': {}, 'asks': {}} for sym in symbols}
         self.trades_history = {sym: [] for sym in symbols}
+        self.liquidations_history = {sym: [] for sym in symbols}
+        self.oi_history = {sym: [] for sym in symbols}
         self.running = False
         
         # Virtual execution tracking
@@ -95,6 +97,47 @@ class OrderbookBot:
                 
         except Exception as e:
             logger.error(f"Error handling trade msg: {e}")
+
+    def handle_liquidation_message(self, msg):
+        try:
+            data = msg.get("data", {})
+            symbol = data.get("symbol")
+            if not symbol or symbol not in self.symbols:
+                return
+                
+            price = float(data.get("price", 0))
+            size = float(data.get("size", 0))
+            side = data.get("side") # Buy or Sell
+            ts = int(data.get("updatedTime", int(datetime.now().timestamp()*1000)))
+            
+            self.liquidations_history[symbol].append({
+                'price': price,
+                'size': size,
+                'side': side,
+                'ts': ts
+            })
+            
+            if len(self.liquidations_history[symbol]) > 1000:
+                self.liquidations_history[symbol] = self.liquidations_history[symbol][-1000:]
+        except Exception as e:
+            logger.error(f"Error handling liquidation msg: {e}")
+
+    def handle_ticker_message(self, msg):
+        try:
+            symbol = msg.get("data", {}).get("symbol")
+            if not symbol or symbol not in self.symbols:
+                return
+            
+            data = msg.get("data", {})
+            if "openInterest" in data:
+                oi = float(data["openInterest"])
+                ts = int(msg.get("ts", int(datetime.now().timestamp()*1000)))
+                self.oi_history[symbol].append({'oi': oi, 'ts': ts})
+                
+                if len(self.oi_history[symbol]) > 1000:
+                    self.oi_history[symbol] = self.oi_history[symbol][-1000:]
+        except Exception as e:
+            logger.error(f"Error handling ticker msg: {e}")
             
     def calculate_features(self, symbol):
         # Calculate OBI
@@ -135,6 +178,22 @@ class OrderbookBot:
         sell_vol = sum([t['size'] for t in recent_trades if t['side'] == 'Sell'])
         delta = buy_vol - sell_vol
         
+        # Calculate Liquidations
+        recent_liqs = [t for t in self.liquidations_history[symbol] if now_ms - t['ts'] < 10000]
+        liq_buy = sum([t['size'] for t in recent_liqs if t['side'] == 'Buy']) # Short liquidations
+        liq_sell = sum([t['size'] for t in recent_liqs if t['side'] == 'Sell']) # Long liquidations
+        
+        # Calculate OI Change (10 seconds)
+        oi_change = 0
+        if self.oi_history[symbol]:
+            current_oi = self.oi_history[symbol][-1]['oi']
+            old_oi = current_oi
+            for t in reversed(self.oi_history[symbol]):
+                if now_ms - t['ts'] >= 10000:
+                    old_oi = t['oi']
+                    break
+            oi_change = current_oi - old_oi
+        
         return {
             'obi_10': obi,
             'delta_10s': delta,
@@ -143,7 +202,10 @@ class OrderbookBot:
             'bid_vol_10': bid_vol,
             'ask_vol_10': ask_vol,
             'bid_wall_10': bid_wall,
-            'ask_wall_10': ask_wall
+            'ask_wall_10': ask_wall,
+            'liq_buy_10s': liq_buy,
+            'liq_sell_10s': liq_sell,
+            'oi_change_10s': oi_change
         }
 
     def place_maker_order(self, symbol, side, price, qty):
@@ -310,7 +372,29 @@ class OrderbookBot:
                     
                     if len(rolling_deltas) % 10 == 0:
                         # Log without spamming every second
-                        logger.info(f"Monitor -> BTC Delta: {btc_features['delta_10s']:.2f} | SOL OBI: {sol_features['obi_10']:.2f} | Wall Z: {bid_wall_z:.1f}/{ask_wall_z:.1f}")
+                        logger.info(f"Monitor -> BTC Delta: {btc_features['delta_10s']:.2f} | SOL OBI: {sol_features['obi_10']:.2f} | Wall Z: {bid_wall_z:.1f}/{ask_wall_z:.1f} | Liq: {sol_features['liq_buy_10s']}/{sol_features['liq_sell_10s']} | OI: {sol_features['oi_change_10s']:.1f}")
+                        
+                        # Save feature row for backtesting
+                        feature_row = {
+                            'ts': datetime.now().isoformat(),
+                            'btc_delta_10s': btc_features['delta_10s'],
+                            'sol_obi_10': sol_features['obi_10'],
+                            'sol_bid_wall_z': bid_wall_z,
+                            'sol_ask_wall_z': ask_wall_z,
+                            'sol_liq_buy': sol_features['liq_buy_10s'],
+                            'sol_liq_sell': sol_features['liq_sell_10s'],
+                            'sol_oi_change': sol_features['oi_change_10s']
+                        }
+                        
+                        file_path = "live_features.csv"
+                        write_header = not os.path.exists(file_path)
+                        try:
+                            with open(file_path, "a") as f:
+                                if write_header:
+                                    f.write(",".join(feature_row.keys()) + "\n")
+                                f.write(",".join([str(v) for v in feature_row.values()]) + "\n")
+                        except Exception as e:
+                            pass
                         
                     # If we don't have a position AND don't have an open entry order waiting
                     if not in_position and "SOLUSDT" not in self.virtual_orders:
@@ -397,6 +481,22 @@ class OrderbookBot:
                 symbol=symbol,
                 callback=self.handle_trade_message
             )
+            
+            try:
+                self.ws.liquidation_stream(
+                    symbol=symbol,
+                    callback=self.handle_liquidation_message
+                )
+            except Exception as e:
+                logger.error(f"Could not subscribe to liquidation stream for {symbol}: {e}")
+                
+            try:
+                self.ws.ticker_stream(
+                    symbol=symbol,
+                    callback=self.handle_ticker_message
+                )
+            except Exception as e:
+                logger.error(f"Could not subscribe to ticker stream for {symbol}: {e}")
             
         logger.info("WebSockets connected.")
         
