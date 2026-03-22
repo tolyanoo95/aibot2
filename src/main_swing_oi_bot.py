@@ -37,10 +37,14 @@ class SwingOIBot:
         self.entry_price = 0
         self.entry_time = None
         
-        # Best strategy parameters from 5m backtest
+        # Best strategy parameters from 5m backtest (baseline)
         self.tp_pct = 0.02    # 2.0% Take Profit
         self.sl_pct = 0.008   # 0.8% Stop Loss
         self.oi_thresh = 5000 # Need 5000+ new SOL entering the market
+        
+        # For dynamic ATR (Average True Range) calculation
+        self.recent_highs = []
+        self.recent_lows = []
         
         # To track candles
         self.last_candle_ts = 0
@@ -128,6 +132,8 @@ class SwingOIBot:
             return None
             
         close_price = recent_trades[-1]['price']
+        high_price = max([t['price'] for t in recent_trades])
+        low_price = min([t['price'] for t in recent_trades])
         
         buy_vol = sum([t['size'] for t in recent_trades if t['side'] == 'Buy'])
         sell_vol = sum([t['size'] for t in recent_trades if t['side'] == 'Sell'])
@@ -152,6 +158,8 @@ class SwingOIBot:
             
         return {
             'close_price': close_price,
+            'high_price': high_price,
+            'low_price': low_price,
             'volume_delta': delta,
             'liq_buy': liq_buy,
             'liq_sell': liq_sell,
@@ -261,11 +269,30 @@ class SwingOIBot:
                             btc_delta = btc_bar['volume_delta']
                             rolling_btc_deltas_5m.append(btc_delta)
                             
+                            self.recent_highs.append(sol_bar['high_price'])
+                            self.recent_lows.append(sol_bar['low_price'])
+                            
                             # Keep last ~3 days of 5m bars for dynamic percentiles (864 bars)
                             if len(rolling_btc_deltas_5m) > 800:
                                 rolling_btc_deltas_5m = rolling_btc_deltas_5m[-800:]
+                            
+                            # Keep last 14 bars for ATR (1 hour 10 mins)
+                            if len(self.recent_highs) > 14:
+                                self.recent_highs = self.recent_highs[-14:]
+                                self.recent_lows = self.recent_lows[-14:]
                                 
-                            logger.info(f"📊 5m Close | BTC Delta: {btc_delta:.2f} | SOL OI Change: {sol_bar['oi_change']:.1f} | Liq: {sol_bar['liq_buy']}/{sol_bar['liq_sell']}")
+                            # Calculate dynamic ATR % (Average True Range as percentage)
+                            if len(self.recent_highs) == 14:
+                                atr_abs = sum([h - l for h, l in zip(self.recent_highs, self.recent_lows)]) / 14
+                                current_atr_pct = atr_abs / sol_bar['close_price']
+                                
+                                # Dynamically adjust TP/SL based on current volatility
+                                # Base assumption: TP is 3x ATR, SL is 1.5x ATR
+                                # But we clamp it between safe minimums and maximums
+                                self.tp_pct = min(max(current_atr_pct * 3.0, 0.01), 0.03) # clamp between 1% and 3%
+                                self.sl_pct = min(max(current_atr_pct * 1.5, 0.005), 0.015) # clamp between 0.5% and 1.5%
+                                
+                            logger.info(f"📊 5m Close | BTC Delta: {btc_delta:.2f} | SOL OI Change: {sol_bar['oi_change']:.1f} | Dynamic TP/SL: {self.tp_pct*100:.2f}%/{self.sl_pct*100:.2f}%")
                             
                             if len(rolling_btc_deltas_5m) > 10 and not self.position:
                                 btc_delta_thresh_long = np.percentile(rolling_btc_deltas_5m, 90)

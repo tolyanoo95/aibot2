@@ -37,12 +37,18 @@ def process_tardis_trades(file_path):
     
     return resampled
 
-def process_tardis_liquidations(file_path):
+def process_tardis_liquidations(file_path, symbol):
     """Processes Liquidations to 5m aggregated sums"""
     if not os.path.exists(file_path):
         return None
         
     df = pd.read_csv(file_path)
+    if len(df) == 0:
+        return None
+        
+    # Tardis liquidations for Bybit come in a single PERPETUALS file now
+    # We must filter by symbol
+    df = df[df['symbol'] == symbol]
     if len(df) == 0:
         return None
         
@@ -86,22 +92,35 @@ def build_5m_features():
     
     # We have 12 days of data from 2025 (1st of each month)
     months = [f"2025-{str(i).zfill(2)}-01" for i in range(1, 13)]
-    months.append("2026-03-20") # Add the specific fresh day we have!
+    
+    # Also we now have contiguous data from Mar 15 to Mar 21 2026 in the new nested directory format
+    months.extend(["2026-03-15", "2026-03-16", "2026-03-17", "2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21"])
     
     for symbol in ["BTCUSDT", "SOLUSDT"]:
         all_bars = []
         for date_str in tqdm(months, desc=f"Processing {symbol}"):
-            # File paths
+            y, m, d = date_str.split("-")
+            
+            # File paths matching the old and new directory structure
             trades_file = f"data/tardis/bybit_trades_{date_str}_{symbol}.csv.gz"
+            # Fallback if trades are also in nested folders
+            if not os.path.exists(trades_file):
+                trades_file = f"data/tardis/bybit/trades/{y}/{m}/{d}/{symbol}.csv.gz"
+                
             liqs_file = f"data/tardis/bybit_liquidations_{date_str}_{symbol}.csv.gz"
+            if not os.path.exists(liqs_file):
+                liqs_file = f"data/tardis/bybit/liquidations/{y}/{m}/{d}/PERPETUALS.csv.gz"
+                
             oi_file = f"data/tardis/bybit_derivative_ticker_{date_str}_{symbol}.csv.gz"
+            if not os.path.exists(oi_file):
+                oi_file = f"data/tardis/bybit/derivative_ticker/{y}/{m}/{d}/{symbol}.csv.gz"
             
             # Process
             df_trades = process_tardis_trades(trades_file)
             if df_trades is None:
                 continue
                 
-            df_liqs = process_tardis_liquidations(liqs_file)
+            df_liqs = process_tardis_liquidations(liqs_file, symbol)
             df_oi = process_tardis_oi(oi_file)
             
             # Merge

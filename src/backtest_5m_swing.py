@@ -103,7 +103,13 @@ if __name__ == "__main__":
     for tp, sl in tp_sl_pairs:
         for oi in oi_thresholds:
             for btc_q in btc_quantiles:
-                res = run_5m_backtest(df, fee_pct=0.0011, tp_pct=tp, sl_pct=sl, btc_delta_q=btc_q, oi_thresh=oi)
+                # Filter data for March 15 to March 21
+                df_march_week = df[(df.index >= '2026-03-15') & (df.index < '2026-03-22')]
+                
+                if len(df_march_week) == 0:
+                    continue
+                    
+                res = run_5m_backtest(df_march_week, fee_pct=0.0011, tp_pct=tp, sl_pct=sl, btc_delta_q=btc_q, oi_thresh=oi)
                 res['tp'] = tp
                 res['sl'] = sl
                 res['oi'] = oi
@@ -111,7 +117,6 @@ if __name__ == "__main__":
                 results.append(res)
                 
     res_df = pd.DataFrame(results)
-    res_df = res_df[res_df['trades'] >= 5]
     
-    print("\n--- Top 5 by Total PnL (including 0.11% Taker Fees) ---")
-    print(res_df.sort_values('pnl', ascending=False).head(5).to_string(index=False))
+    print("\n--- March 15-21, 2026 Specific Results ---")
+    print(res_df.sort_values('pnl', ascending=False).to_string(index=False))
